@@ -5,7 +5,7 @@
    features (built-in lessons, coding lab, revision, notes) keep working. */
 (function(){
   const AI = window.AI = {
-    status: 'checking', limits: null,
+    status: 'checking', limits: { images: { maxCount: 4 } },
 
     async init(){
       try {
@@ -52,7 +52,8 @@
     async _call(input, opts, wantJson){
       if(!this.ready()) throw this._err('offline');
       const body = { input, json: !!wantJson };
-      if(opts.images && opts.images.length) body.images = await Promise.all(opts.images.map(b => this._blobToBase64(b)));
+      const imgs = opts.images ? (Array.isArray(opts.images) ? opts.images : [opts.images]) : [];
+      if(imgs.length) body.images = await Promise.all(imgs.map(b => this._blobToBase64(b)));
       if(opts.peek){ const el = typeof opts.peek === 'function' ? opts.peek() : opts.peek; if(el) el.textContent = '… thinking'; }
       let res;
       try {
