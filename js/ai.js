@@ -1,67 +1,96 @@
-/* ai.js — the one gateway to Claude (via the artifact's `sample` capability, on the learner's own Claude plan).
-   No API keys, no paid services. If unavailable, callers get a clear error and offline features keep working. */
+/* ai.js — the one gateway to AI on the standalone site. Calls this server's own
+   /api/ai endpoint, which holds the real Gemini API key server-side and proxies to
+   Google's free-tier Gemini API. No key ever reaches the browser. If the backend is
+   unreachable or has no key configured, callers get a clear error and offline
+   features (built-in lessons, coding lab, revision, notes) keep working. */
 (function(){
   const AI = window.AI = {
-    fn: null, status: 'checking', limits: null,
+    status: 'checking', limits: null,
 
     async init(){
       try {
-        if(!window.claude || !window.claude.use){ this.status = 'off'; M.emit('ai'); return; }
-        this.fn = await window.claude.use('sample');
-        this.status = this.fn ? 'on' : 'off';
-        if(this.fn && this.fn.limits) this.limits = await this.fn.limits().catch(() => null);
+        const r = await fetch('/api/health', { cache: 'no-store' });
+        if(!r.ok){ this.status = 'off'; M.emit('ai'); return; }
+        const data = await r.json();
+        this.status = data.ok ? 'on' : 'off';
       } catch(e){ this.status = 'off'; }
       M.emit('ai');
     },
 
-    ready(){ return !!this.fn && this.status === 'on'; },
-    canSeeImages(){ return !!(this.limits && this.limits.images); },
+    ready(){ return this.status === 'on'; },
+    canSeeImages(){ return true; },
 
     friendly(code){
       return ({
-        not_granted: 'The AI teacher needs your permission. Allow it when Claude asks, then reload the page.',
-        sampling_disabled: 'Claude is not available for this account, so AI features are switched off.',
-        rate_limited: 'Claude is busy or your usage limit was reached. Wait a minute, then try again.',
-        session_expired: 'Your Claude session expired. Sign in again, then try again.',
-        refused: 'Claude declined this request. Rephrase it and try again.',
-        empty_completion: 'Claude returned an empty answer. Try again, maybe with a simpler request.',
+        no_api_key: 'The AI teacher is not configured on this server yet.',
+        sampling_disabled: 'AI features are switched off for this deployment.',
+        rate_limited: 'The AI teacher is busy or the free usage limit was reached. Wait a minute, then try again.',
+        refused: 'The AI teacher declined this request. Rephrase it and try again.',
+        empty_completion: 'The AI teacher returned an empty answer. Try again, maybe with a simpler request.',
         invalid_json: 'The AI answer came back in the wrong format. Try again.',
         prompt_too_large: 'That is too much text for one request. Use a shorter source or a smaller chapter.',
-        images_unavailable: 'This view cannot send images to Claude.',
+        images_unavailable: 'This view cannot send images to the AI teacher.',
         image_rejected: 'That image could not be read. Try a different file.',
         cancelled: 'Stopped.',
-        offline: 'The AI teacher is not available here. Open this page inside Claude to switch it on.',
+        offline: 'The AI teacher is not available right now.',
       })[code] || 'The AI teacher could not answer (network or service problem). Try again.';
     },
 
-    _err(e){
-      const code = (e && e.code) || 'upstream_error';
-      if(['not_granted','sampling_disabled','not_declared','capability_disabled','capability_removed'].includes(code)){ this.status = code === 'not_granted' ? 'denied' : 'off'; M.emit('ai'); }
-      const err = new Error(this.friendly(code)); err.code = code; err.partial = e && e.text; return err;
+    _err(code, partial){
+      if(['no_api_key','sampling_disabled'].includes(code)) this.status = 'off';
+      const err = new Error(this.friendly(code)); err.code = code; err.partial = partial; return err;
     },
 
-    /* Ask for structured data. opts: {tier, signal, peek: element to show streaming progress, images} */
+    async _blobToBase64(blob){
+      const buf = await blob.arrayBuffer();
+      let binary = '';
+      const bytes = new Uint8Array(buf);
+      for(let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return { data: btoa(binary), mime: blob.type || 'image/jpeg' };
+    },
+
+    async _call(input, opts, wantJson){
+      if(!this.ready()) throw this._err('offline');
+      const body = { input, json: !!wantJson };
+      if(opts.images && opts.images.length) body.images = await Promise.all(opts.images.map(b => this._blobToBase64(b)));
+      if(opts.peek){ const el = typeof opts.peek === 'function' ? opts.peek() : opts.peek; if(el) el.textContent = '… thinking'; }
+      let res;
+      try {
+        res = await fetch('/api/ai', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: opts.signal,
+        });
+      } catch(e){
+        if(e.name === 'AbortError') throw this._err('cancelled');
+        throw this._err('offline');
+      }
+      if(!res.ok){
+        let payload = {};
+        try { payload = await res.json(); } catch(_){}
+        let code = 'upstream_error';
+        if(res.status === 429) code = 'rate_limited';
+        else if(res.status === 400) code = payload.error === 'invalid_json' ? 'invalid_json' : 'refused';
+        else if(res.status === 503) code = 'no_api_key';
+        else if(payload.error) code = payload.error;
+        throw this._err(code);
+      }
+      return res.json();
+    },
+
+    /* Ask for structured data. opts: {tier, signal, peek, images} */
     async json(prompt, opts = {}){
-      if(!this.ready()) throw this._err({code:'offline'});
-      const o = { modelTier: opts.tier || 'default' };
-      if(opts.signal) o.signal = opts.signal;
-      if(opts.images) o.images = opts.images;
-      if(opts.nocache) o.cache = false;
-      if(opts.peek) o.onText = ({text}) => { const el = typeof opts.peek === 'function' ? opts.peek() : opts.peek; if(el) el.textContent = '… ' + text.slice(-160); };
-      try { return await this.fn.json(prompt, o); }
-      catch(e){ throw this._err(e); }
+      const data = await this._call(prompt, opts, true);
+      if(data.parsed === undefined) throw this._err('invalid_json');
+      return data.parsed;
     },
 
-    /* Free text. input: string or turns. opts: {tier, signal, onText, cache} */
+    /* Free text. input: string or turns [{role, content}]. opts: {tier, signal, onText, images} */
     async text(input, opts = {}){
-      if(!this.ready()) throw this._err({code:'offline'});
-      const o = { modelTier: opts.tier || 'default' };
-      if(opts.signal) o.signal = opts.signal;
-      if(opts.onText) o.onText = opts.onText;
-      if(opts.cache !== undefined) o.cache = opts.cache;
-      if(opts.images) o.images = opts.images;
-      try { return (await this.fn(input, o)).text; }
-      catch(e){ throw this._err(e); }
+      const data = await this._call(input, opts, false);
+      if(opts.onText) opts.onText({ text: data.text });
+      return data.text;
     },
 
     /* ---------- prompt context builders (personalization) ---------- */
