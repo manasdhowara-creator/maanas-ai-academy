@@ -1,6 +1,13 @@
 /* server.js — serves the academy's static files AND proxies AI requests to Google's
    free-tier Gemini API. The Gemini API key lives ONLY here, as a server environment
-   variable (GEMINI_API_KEY) — it is never sent to the browser. */
+   variable (GEMINI_API_KEY) — it is never sent to the browser.
+
+   MODEL SELECTION IS SELF-UPDATING: instead of a hardcoded model name (which breaks
+   whenever Google renames/retires a model), this server asks Google's own API for the
+   list of models currently available to this key, picks the "flash" family (fast +
+   free-tier friendly), and tries them newest-first, falling back automatically on any
+   one that's busy, retired, or gives a broken answer. The list is re-fetched once an
+   hour, so as Google's lineup changes over time, this keeps working with no code edits. */
 const express = require('express');
 const path = require('path');
 
@@ -9,18 +16,46 @@ app.use(express.json({ limit: '20mb' }));
 app.use(express.static(__dirname));
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-// Try the newest model first; if it's overloaded, not found, or gives back a
-// broken answer, automatically fall back to the next one — the caller only
-// ever sees a failure if EVERY model in this list failed.
-const MODELS = [
-  process.env.GEMINI_MODEL,
-  'gemini-3.8-flash',
-  'gemini-3.6-flash',
-  'gemini-3.5-flash',
-  'gemini-2.5-flash',
-].filter(Boolean);
+const FETCH_TIMEOUT_MS = 45000;
+const MODEL_LIST_TTL_MS = 60 * 60 * 1000; // re-check available models once an hour
 
-const FETCH_TIMEOUT_MS = 25000;
+// Last-resort hardcoded list, used only if the live model list can't be fetched at all
+// (e.g. a transient network issue) — kept a few models deep just in case.
+const HARDCODED_FALLBACK = ['gemini-flash-latest', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
+
+let modelsCache = { list: [], at: 0 };
+
+async function getModels() {
+  if (modelsCache.list.length && Date.now() - modelsCache.at < MODEL_LIST_TTL_MS) return modelsCache.list;
+  try {
+    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
+      headers: { 'x-goog-api-key': GEMINI_API_KEY },
+    });
+    if (!res.ok) throw new Error('model list request failed: ' + res.status);
+    const data = await res.json();
+    const flash = (data.models || [])
+      .filter(m => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+      .map(m => (m.name || '').replace(/^models\//, ''))
+      .filter(name => /flash/i.test(name) && !/vision|embed|tts|image|audio/i.test(name));
+    // Prefer the highest version number first, and non-"lite" variants before "lite" ones
+    // within the same version, so we try the most capable available model first.
+    flash.sort((a, b) => {
+      const va = parseFloat((a.match(/(\d+(\.\d+)?)/) || [0, '0'])[1]);
+      const vb = parseFloat((b.match(/(\d+(\.\d+)?)/) || [0, '0'])[1]);
+      if (vb !== va) return vb - va;
+      return (a.includes('lite') ? 1 : 0) - (b.includes('lite') ? 1 : 0);
+    });
+    const list = [...new Set([process.env.GEMINI_MODEL, ...flash].filter(Boolean))];
+    if (list.length) {
+      modelsCache = { list, at: Date.now() };
+      console.log('Gemini models available now:', list.join(', '));
+      return list;
+    }
+  } catch (e) {
+    console.warn('Could not fetch live Gemini model list, using hardcoded fallback:', e.message);
+  }
+  return [process.env.GEMINI_MODEL, ...HARDCODED_FALLBACK].filter(Boolean);
+}
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: !!GEMINI_API_KEY });
@@ -88,6 +123,7 @@ app.post('/api/ai', async (req, res) => {
     const body = { contents, generationConfig: { maxOutputTokens: 8192 } };
     if (json) body.generationConfig.responseMimeType = 'application/json';
 
+    const MODELS = await getModels();
     let lastErrDetail = '', lastErrStatus = 502, lastInvalidRaw = '';
 
     for (let i = 0; i < MODELS.length; i++) {
