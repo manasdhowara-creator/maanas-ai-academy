@@ -9,7 +9,14 @@ app.use(express.json({ limit: '20mb' }));
 app.use(express.static(__dirname));
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+// Try the newest model first; if Google reports it overloaded (503), automatically
+// fall back to an older, less-congested model instead of failing the request.
+const MODELS = [
+  process.env.GEMINI_MODEL,
+  'gemini-3.8-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash',
+].filter(Boolean);
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: !!GEMINI_API_KEY });
@@ -48,18 +55,31 @@ app.post('/api/ai', async (req, res) => {
     const body = { contents };
     if (json) body.generationConfig = { responseMimeType: 'application/json' };
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
-    const upstream = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-      body: JSON.stringify(body),
-    });
+    // Try each candidate model in order; move to the next one only when the
+    // current model is unavailable/overloaded (503) or not found (404).
+    let upstream, usedModel, lastDetail = '';
+    for (const model of MODELS) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+      upstream = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+        body: JSON.stringify(body),
+      });
+      usedModel = model;
+      if (upstream.ok) break;
+      if (upstream.status === 503 || upstream.status === 404) {
+        try { lastDetail = (await upstream.text()).slice(0, 500); } catch (_) {}
+        console.warn(`Gemini model ${model} unavailable (${upstream.status}), trying next fallback...`);
+        continue;
+      }
+      break; // any other error (400, 429, etc.) — stop, don't waste calls on fallbacks
+    }
 
     if (!upstream.ok) {
       const status = upstream.status === 429 ? 429 : (upstream.status === 400 ? 400 : 502);
-      let detail = '';
-      try { detail = (await upstream.text()).slice(0, 500); } catch (_) {}
-      console.error('Gemini upstream error', upstream.status, detail);
+      let detail = lastDetail;
+      if (!detail) { try { detail = (await upstream.text()).slice(0, 500); } catch (_) {} }
+      console.error('Gemini upstream error', upstream.status, 'model:', usedModel, detail);
       return res.status(status).json({ error: 'upstream_error', status: upstream.status });
     }
 
