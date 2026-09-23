@@ -96,7 +96,10 @@ app.post('/api/ai', async (req, res) => {
         const m = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
         if (m) { try { parsed = JSON.parse(m[0]); } catch (_) {} }
       }
-      if (parsed === undefined) return res.status(502).json({ error: 'invalid_json', raw: text.slice(0, 500) });
+      if (parsed === undefined) {
+        console.error('invalid_json from model', usedModel, '| raw text:', text.slice(0, 800));
+        return res.status(502).json({ error: 'invalid_json', raw: text.slice(0, 500) });
+      }
       return res.json({ parsed });
     }
     return res.json({ text });
