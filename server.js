@@ -9,18 +9,51 @@ app.use(express.json({ limit: '20mb' }));
 app.use(express.static(__dirname));
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-// Try the newest model first; if Google reports it overloaded (503), automatically
-// fall back to an older, less-congested model instead of failing the request.
+// Try the newest model first; if it's overloaded, not found, or gives back a
+// broken answer, automatically fall back to the next one — the caller only
+// ever sees a failure if EVERY model in this list failed.
 const MODELS = [
   process.env.GEMINI_MODEL,
   'gemini-3.8-flash',
   'gemini-3.6-flash',
   'gemini-3.5-flash',
+  'gemini-2.5-flash',
 ].filter(Boolean);
+
+const FETCH_TIMEOUT_MS = 25000;
 
 app.get('/api/health', (req, res) => {
   res.json({ ok: !!GEMINI_API_KEY });
 });
+
+// Strip ```json ... ``` / ``` ... ``` fences some models add despite instructions,
+// then try to parse; if that fails, fall back to extracting the first {...}/[...] block.
+function extractJson(rawText) {
+  let text = rawText.trim();
+  const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fence) text = fence[1].trim();
+  try { return JSON.parse(text); } catch (_) {}
+  const m = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+  if (m) { try { return JSON.parse(m[0]); } catch (_) {} }
+  return undefined;
+}
+
+async function callModel(model, body) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const upstream = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    return upstream;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 app.post('/api/ai', async (req, res) => {
   try {
@@ -52,57 +85,65 @@ app.post('/api/ai', async (req, res) => {
       last.parts[0].text += '\n\nRespond with ONLY valid JSON. No markdown code fences, no extra commentary.';
     }
 
-    const body = { contents };
-    if (json) body.generationConfig = { responseMimeType: 'application/json' };
+    const body = { contents, generationConfig: { maxOutputTokens: 8192 } };
+    if (json) body.generationConfig.responseMimeType = 'application/json';
 
-    // Try each candidate model in order; move to the next one only when the
-    // current model is unavailable/overloaded (503) or not found (404).
-    let upstream, usedModel, lastDetail = '';
-    for (const model of MODELS) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-      upstream = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-        body: JSON.stringify(body),
-      });
-      usedModel = model;
-      if (upstream.ok) break;
-      if (upstream.status === 503 || upstream.status === 404) {
-        try { lastDetail = (await upstream.text()).slice(0, 500); } catch (_) {}
-        console.warn(`Gemini model ${model} unavailable (${upstream.status}), trying next fallback...`);
+    let lastErrDetail = '', lastErrStatus = 502, lastInvalidRaw = '';
+
+    for (let i = 0; i < MODELS.length; i++) {
+      const model = MODELS[i];
+      const isLastModel = i === MODELS.length - 1;
+      let upstream;
+      try {
+        upstream = await callModel(model, body);
+      } catch (e) {
+        console.warn(`Gemini model ${model} request failed (${e.name}: ${e.message}), trying next...`);
+        lastErrDetail = e.message || 'network error';
+        continue; // network hiccup / timeout — try the next model
+      }
+
+      if (!upstream.ok) {
+        let detail = '';
+        try { detail = (await upstream.text()).slice(0, 500); } catch (_) {}
+        lastErrDetail = detail; lastErrStatus = upstream.status;
+        if (upstream.status === 503 || upstream.status === 404 || upstream.status === 429) {
+          console.warn(`Gemini model ${model} unavailable (${upstream.status}), trying next fallback...`);
+          continue; // busy / doesn't exist / rate-limited on this model — try next
+        }
+        // A genuine bad-request (400) or auth error (401/403) won't be fixed by
+        // switching models, so stop here.
+        console.error('Gemini upstream error', upstream.status, 'model:', model, detail);
+        const status = upstream.status === 400 ? 400 : 502;
+        return res.status(status).json({ error: 'upstream_error', status: upstream.status });
+      }
+
+      const data = await upstream.json();
+      const text = (data.candidates && data.candidates[0] && data.candidates[0].content &&
+        data.candidates[0].content.parts || []).map(p => p.text || '').join('');
+      const finishReason = data.candidates && data.candidates[0] && data.candidates[0].finishReason;
+
+      if (!text) {
+        console.warn(`Gemini model ${model} returned no text (finishReason: ${finishReason || 'unknown'}), trying next...`);
+        lastErrDetail = 'empty response, finishReason: ' + finishReason;
         continue;
       }
-      break; // any other error (400, 429, etc.) — stop, don't waste calls on fallbacks
+
+      if (!json) return res.json({ text });
+
+      const parsed = extractJson(text);
+      if (parsed !== undefined) return res.json({ parsed });
+
+      lastInvalidRaw = text.slice(0, 800);
+      console.warn(`Gemini model ${model} gave unparsable JSON, trying next...`, isLastModel ? '(no more models left)' : '');
     }
 
-    if (!upstream.ok) {
-      const status = upstream.status === 429 ? 429 : (upstream.status === 400 ? 400 : 502);
-      let detail = lastDetail;
-      if (!detail) { try { detail = (await upstream.text()).slice(0, 500); } catch (_) {} }
-      console.error('Gemini upstream error', upstream.status, 'model:', usedModel, detail);
-      return res.status(status).json({ error: 'upstream_error', status: upstream.status });
+    // Every model in the list failed.
+    if (lastInvalidRaw) {
+      console.error('invalid_json from all models | last raw text:', lastInvalidRaw);
+      return res.status(502).json({ error: 'invalid_json', raw: lastInvalidRaw.slice(0, 500) });
     }
-
-    const data = await upstream.json();
-    const text = (data.candidates && data.candidates[0] && data.candidates[0].content &&
-      data.candidates[0].content.parts || []).map(p => p.text || '').join('');
-
-    if (!text) return res.status(502).json({ error: 'empty_completion' });
-
-    if (json) {
-      let parsed;
-      try { parsed = JSON.parse(text); }
-      catch (e) {
-        const m = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-        if (m) { try { parsed = JSON.parse(m[0]); } catch (_) {} }
-      }
-      if (parsed === undefined) {
-        console.error('invalid_json from model', usedModel, '| raw text:', text.slice(0, 800));
-        return res.status(502).json({ error: 'invalid_json', raw: text.slice(0, 500) });
-      }
-      return res.json({ parsed });
-    }
-    return res.json({ text });
+    console.error('All Gemini models failed. Last status:', lastErrStatus, 'detail:', lastErrDetail);
+    return res.status(lastErrStatus === 429 ? 429 : 502).json({ error: 'upstream_error', status: lastErrStatus });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'server_error' });
