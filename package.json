@@ -1,0 +1,15 @@
+{
+  "name": "maanas-ai-academy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Maanas AI Academy — static frontend + a small backend that proxies AI requests to the free-tier Gemini API.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
