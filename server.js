@@ -16,6 +16,8 @@ app.use(express.json({ limit: '20mb' }));
 app.use(express.static(__dirname));
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const FETCH_TIMEOUT_MS = 45000;
 const MODEL_LIST_TTL_MS = 60 * 60 * 1000; // re-check available models once an hour
 
@@ -58,8 +60,49 @@ async function getModels() {
 }
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: !!GEMINI_API_KEY });
+  res.json({ ok: !!(GEMINI_API_KEY || GROQ_API_KEY) });
 });
+
+/* Groq — a completely separate, independent free-tier AI provider (different
+   infrastructure from Google entirely). Used ONLY as a last-resort fallback,
+   after every Gemini model has failed. Groq uses an OpenAI-compatible chat
+   completions API, so we convert our Gemini-style `contents` into OpenAI-style
+   `messages` and reuse the same extractJson() helper for JSON-mode replies. */
+async function callGroq(contents, wantJson) {
+  const messages = contents.map(c => ({
+    role: c.role === 'model' ? 'assistant' : 'user',
+    content: (c.parts || []).map(p => p.text || '').join('\n') || '(no text)',
+  }));
+  const body = {
+    model: GROQ_MODEL,
+    messages,
+    max_tokens: 8192,
+  };
+  if (wantJson) body.response_format = { type: 'json_object' };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let upstream;
+  try {
+    upstream = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${GROQ_API_KEY}` },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!upstream.ok) {
+    const detail = await upstream.text().catch(() => '');
+    throw new Error(`Groq upstream error ${upstream.status}: ${detail.slice(0, 300)}`);
+  }
+  const data = await upstream.json();
+  const text = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+  if (!text) throw new Error('Groq returned empty response');
+  return text;
+}
 
 // Strip ```json ... ``` / ``` ... ``` fences some models add despite instructions,
 // then try to parse; if that fails, fall back to extracting the first {...}/[...] block.
@@ -92,7 +135,7 @@ async function callModel(model, body) {
 
 app.post('/api/ai', async (req, res) => {
   try {
-    if (!GEMINI_API_KEY) return res.status(503).json({ error: 'no_api_key' });
+    if (!GEMINI_API_KEY && !GROQ_API_KEY) return res.status(503).json({ error: 'no_api_key' });
 
     const { input, json, images } = req.body || {};
     if (!input) return res.status(400).json({ error: 'missing_input' });
@@ -123,7 +166,7 @@ app.post('/api/ai', async (req, res) => {
     const body = { contents, generationConfig: { maxOutputTokens: 8192 } };
     if (json) body.generationConfig.responseMimeType = 'application/json';
 
-    const MODELS = await getModels();
+    const MODELS = GEMINI_API_KEY ? await getModels() : [];
     let lastErrDetail = '', lastErrStatus = 502, lastInvalidRaw = '';
 
     for (let i = 0; i < MODELS.length; i++) {
@@ -173,12 +216,28 @@ app.post('/api/ai', async (req, res) => {
       console.warn(`Gemini model ${model} gave unparsable JSON, trying next...`, isLastModel ? '(no more models left)' : '');
     }
 
-    // Every model in the list failed.
+    // Every Gemini model failed (or no Gemini key at all). Last resort: Groq,
+    // a completely independent free-tier provider on separate infrastructure.
+    if (GROQ_API_KEY) {
+      try {
+        console.warn('All Gemini models failed/unavailable — falling back to Groq...');
+        const text = await callGroq(contents, !!json);
+        if (!json) return res.json({ text });
+        const parsed = extractJson(text);
+        if (parsed !== undefined) return res.json({ parsed });
+        console.error('Groq gave unparsable JSON | last raw text:', text.slice(0, 800));
+        return res.status(502).json({ error: 'invalid_json', raw: text.slice(0, 500) });
+      } catch (e) {
+        console.error('Groq fallback also failed:', e.message);
+      }
+    }
+
+    // Every provider failed.
     if (lastInvalidRaw) {
       console.error('invalid_json from all models | last raw text:', lastInvalidRaw);
       return res.status(502).json({ error: 'invalid_json', raw: lastInvalidRaw.slice(0, 500) });
     }
-    console.error('All Gemini models failed. Last status:', lastErrStatus, 'detail:', lastErrDetail);
+    console.error('All providers failed. Last status:', lastErrStatus, 'detail:', lastErrDetail);
     return res.status(lastErrStatus === 429 ? 429 : 502).json({ error: 'upstream_error', status: lastErrStatus });
   } catch (e) {
     console.error(e);
