@@ -9,7 +9,7 @@
   ];
   const TABS = [['dashboard','Home','home'],['learn','Learn','search'],['revise','Revise','repeat'],['coach','Coach','chat']];
   const EXAMPLES = ['Class 8 Science - Force','Photosynthesis','Machine Learning','Teach me Python from zero','Class 8 Maths - Linear Equations'];
-
+ 
   /* ---------- navigation ---------- */
   V.nav = () => {
     const cur = M.current.name === 'home' ? (Store.topicsList().length ? 'dashboard' : 'learn') : M.current.name === 'topic' ? 'lessons' : M.current.name;
@@ -31,7 +31,7 @@
   M.action('close-sheet', () => { document.getElementById('sheet').hidden = true; });
   M.action('sheet-go', el => { document.getElementById('sheet').hidden = true; M.go(el.dataset.to); });
   document.getElementById('aiPill').addEventListener('click', () => M.go('settings'));
-
+ 
   /* ---------- shared search box ---------- */
   const searchHTML = (big) => `<form class="searchbox" id="searchForm" role="search">${M.icon.search}<input id="q" type="search" enterkeyhint="go" autocomplete="off" placeholder="${big ? 'e.g. Class 8 Science - Force' : 'Learn something new…'}" aria-label="What do you want to learn?"><button class="btn primary" type="submit">Learn</button></form>`;
   function bindSearch(view){
@@ -39,7 +39,7 @@
     f.addEventListener('submit', e => { e.preventDefault(); Lesson.startSearch(view.querySelector('#q').value); });
   }
   M.action('example', el => { const q = document.getElementById('q'); if(q){ q.value = el.dataset.q; } Lesson.startSearch(el.dataset.q); });
-
+ 
   /* ================= HOME / DASHBOARD ================= */
   M.route('home', (view) => { if(Store.topicsList().length) M.routes.dashboard(view); else M.routes.learn(view); });
   M.route('dashboard', (view) => {
@@ -81,7 +81,7 @@
     if(!t.lessonProgress.done){ t.lessonProgress.done = true; } if(!t.diagnostic){ t.diagnostic = { questions:[], answers:{}, done:true }; } else t.diagnostic.done = true;
     t.fixRun = null; Lesson.tab[t.id] = 'study'; Store.saveTopic(t); M.go('topic-' + t.id);
   });
-
+ 
   /* ================= LEARN ================= */
   V.book = null; V.bookErr = null; V.bookBusy = null; V.offlineMiss = null;
   M.on('offline-miss', q => { V.offlineMiss = q; if(M.current.name === 'learn' || M.current.name === 'home') M.render(); });
@@ -115,7 +115,7 @@
     if(!AI.ready()){ M.toast(AI.friendly('offline')); return; }
     Lesson.startSource({ name: 'Pasted notes' }, { title, start: 1, end: 1 }, text);
   });
-
+ 
   async function readBook(file){
     V.book = null; V.bookErr = null; V.bookBusy = 'Reading your source…'; paintBook();
     try {
@@ -152,7 +152,7 @@
     if(text.length < 200){ V.bookErr = 'This chapter has too little readable text to teach from.'; paintBook(); return; }
     Lesson.startSource(b, ch, text);
   });
-
+ 
   /* onboarding: short, skippable, never blocks learning */
   function onboardHTML(){
     const p = Store.state.profile;
@@ -176,7 +176,7 @@
       p.onboarded = true; Store.touch('profile'); M.toast('Saved. Lessons will now fit you.'); M.render(); });
   }
   M.action('ob-skip', () => { Store.state.profile.onboarded = true; Store.touch('profile'); M.render(); });
-
+ 
   /* ================= MY LESSONS ================= */
   M.route('lessons', (view) => {
     const topics = Store.topicsList(); const f = V.lessonFilter || 'all';
@@ -190,7 +190,7 @@
     </div>`;
   });
   M.action('lesson-filter', el => { V.lessonFilter = el.dataset.f; M.render(); });
-
+ 
   /* ================= REVISE ================= */
   M.route('revise', (view) => {
     const due = Revision.due(), up = Revision.upcoming();
@@ -203,7 +203,7 @@
     </div>`;
   });
   M.action('revise-now', el => { const t = Store.topic(el.dataset.tid); Lesson.tab[t.id] = 'study'; if(!t.atRisk && !t.pendingFix.length) Lesson.makeRun(t, 'review'); M.go('topic-' + t.id); });
-
+ 
   /* ================= MISTAKE BANK ================= */
   M.route('mistakes', (view) => {
     const all = Store.state.mistakes; const open = all.filter(m => !m.resolved);
@@ -221,7 +221,7 @@
     </div>`;
   });
   M.action('mistake-filter', el => { V.mistakeFilter = el.dataset.f; M.render(); });
-
+ 
   /* ================= PROGRESS ================= */
   M.route('progress', (view) => {
     const topics = Store.topicsList();
@@ -250,7 +250,7 @@
       : M.emptyHTML('chart', 'Your progress appears after your first answers.', '<a class="btn primary" href="#learn">Start learning</a>')}
     </div>`;
   });
-
+ 
   /* ================= NOTES ================= */
   M.route('notes', (view, id) => {
     const notes = Store.state.notes;
@@ -279,7 +279,7 @@
   M.action('note-new', () => { const n = { id: M.uid('n'), title: 'Untitled note', body: '', created: Date.now(), updated: Date.now() }; Store.state.notes.unshift(n); Store.touch('notes'); V.notePreview = false; M.go('notes-' + n.id); });
   M.action('note-mode', el => { V.notePreview = el.dataset.p === '1'; M.render(); });
   M.action('note-del', el => { if(el.dataset.confirm !== '1'){ el.dataset.confirm = '1'; el.textContent = 'Tap again to delete'; return; } Store.state.notes = Store.state.notes.filter(n => n.id !== el.dataset.id); Store.touch('notes'); M.go('notes'); });
-
+ 
   /* ================= LIBRARY ================= */
   V.libBusy = null; V.libErr = null; V.libOpen = {}; V.libSubjectInput = '';
   M.route('library', (view) => {
@@ -296,14 +296,28 @@
     view.querySelector('#libSubject').addEventListener('input', e => { V.libSubjectInput = e.target.value; });
     view.querySelector('#libFile').addEventListener('change', e => { const f = e.target.files[0]; if(f) addToLibrary(f); e.target.value = ''; });
   });
-
+ 
   function libStatusHTML(){
     if(V.libBusy) return M.loadingHTML(V.libBusy, 'Everything is processed in your browser');
     if(V.libErr) return M.errorHTML(V.libErr);
     return '';
   }
   function paintLibStatus(){ const el = document.getElementById('libStatus'); if(el) el.innerHTML = libStatusHTML(); }
-
+ 
+  const SUBJECT_ICON_RULES = [
+    [/math/i, 'chart'], [/sci(ence)?\b/i, 'flask'], [/comput|coding|program/i, 'code'],
+    [/\bai\b|artificial/i, 'brain'], [/social|history|civic|geog|polit|economic/i, 'flag'],
+    [/english|hindi|sanskrit|language|literat/i, 'book'],
+  ];
+  const SUBJECT_COLORS = ['#6366f1','#059669','#d97706','#dc2626','#0891b2','#7c3aed','#db2777','#65a30d'];
+  function subjectIcon(s){ const m = SUBJECT_ICON_RULES.find(([re]) => re.test(s)); return m ? m[1] : 'folder'; }
+  function subjectColor(s){ let h = 0; for(let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return SUBJECT_COLORS[h % SUBJECT_COLORS.length]; }
+  function subjectBadge(s, size = 40){
+    const c = subjectColor(s);
+    return `<span style="display:inline-flex;align-items:center;justify-content:center;width:${size}px;height:${size}px;border-radius:${size/2.8}px;background:${c}22;color:${c};flex-shrink:0"><span style="width:${size*0.52}px;height:${size*0.52}px;display:inline-flex">${M.icon[subjectIcon(s)]}</span></span>`;
+  }
+  const smallIcon = (icon, size = 15) => M.icon[icon].replace('<svg', `<svg style="width:${size}px;height:${size}px;vertical-align:-3px"`);
+ 
   function libListHTML(){
     const lib = Store.state.library;
     if(!lib.length) return M.emptyHTML('folder', 'No subjects yet — add a PDF above and its chapters will appear here, ready to study anytime.');
@@ -316,18 +330,18 @@
       const open = !!V.libOpen[s];
       return `<div class="card">
         <button class="row-between" data-action="lib-toggle" data-s="${M.esc(s)}" style="width:100%;background:none;border:none;cursor:pointer;padding:0;text-align:left;color:inherit;font:inherit">
-          <div><h3 style="margin:0">${M.esc(s)}</h3><div class="small muted">${books.length} PDF${books.length > 1 ? 's' : ''} · ${chapCount} chapter${chapCount > 1 ? 's' : ''}</div></div>
-          <span style="display:inline-flex;transform:rotate(${open ? 90 : 0}deg);transition:transform .15s">${M.icon.arrow}</span>
+          <div class="row" style="gap:12px;align-items:center">${subjectBadge(s)}<div><h3 style="margin:0">${M.esc(s)}</h3><div class="small muted">${books.length} PDF${books.length > 1 ? 's' : ''} · ${chapCount} chapter${chapCount > 1 ? 's' : ''}</div></div></div>
+          <span style="display:inline-flex;transform:rotate(${open ? 90 : 0}deg);transition:transform .15s;flex-shrink:0">${M.icon.arrow}</span>
         </button>
         ${open ? `<div class="stack-sm" style="margin-top:12px">${books.map(b => `
           <div class="stack-sm">
-            <div class="row-between"><div class="small muted">${M.icon.book} ${M.esc(b.name)}${b.scanned ? ' · scanned' : ''}</div><button class="icon-btn" data-action="lib-remove" data-book="${b.id}" aria-label="Remove this PDF">${M.icon.trash}</button></div>
+            <div class="row-between"><div class="small muted">${smallIcon('book')} ${M.esc(b.name)}${b.scanned ? ' · scanned' : ''}</div><button class="icon-btn" data-action="lib-remove" data-book="${b.id}" aria-label="Remove this PDF">${M.icon.trash}</button></div>
             <div class="mini-list">${b.structure.list.map((c, i) => `<div class="mini-item" style="cursor:default"><div class="grow"><div class="t">${M.esc(c.title)}</div><div class="s">Pages ${c.start}–${c.end}</div></div><button class="btn sm primary" data-action="lib-study" data-book="${b.id}" data-i="${i}">Study</button></div>`).join('')}</div>
           </div>`).join('')}</div>` : ''}
       </div>`;
     }).join('')}</div>`;
   }
-
+ 
   async function addToLibrary(file){
     const subject = (V.libSubjectInput || '').trim();
     if(!subject){ V.libErr = 'Type a subject name first (e.g. Sanskrit).'; paintLibStatus(); return; }
@@ -338,12 +352,17 @@
       book.id = M.uid('lib'); book.subject = subject; book.addedAt = Date.now();
       Object.defineProperty(book, 'doc', { value: book.doc, enumerable: false }); // kept in memory this session only (for OCR of scanned pages); never saved to storage
       Store.saveLibraryBook(book);
-      V.libSubjectInput = ''; V.libOpen[subject] = true;
+      V.libSubjectInput = ''; V.libOpen = { [subject]: true }; // opening this one closes every other subject
     } catch(e){ V.libErr = e.message; }
     V.libBusy = null; M.render();
   }
-
-  M.action('lib-toggle', el => { V.libOpen[el.dataset.s] = !V.libOpen[el.dataset.s]; M.render(); });
+ 
+  M.action('lib-toggle', el => {
+    const s = el.dataset.s, wasOpen = !!V.libOpen[s];
+    V.libOpen = {}; // close every subject
+    if(!wasOpen) V.libOpen[s] = true; // then open only the one just clicked (unless it was already open, i.e. this click means "collapse it")
+    M.render();
+  });
   M.action('lib-remove', el => { Store.removeLibraryBook(el.dataset.book); M.render(); });
   M.action('lib-study', async el => {
     const b = Store.state.library.find(x => x.id === el.dataset.book); if(!b) return;
@@ -359,7 +378,7 @@
     if(text.length < 200){ M.toast('This chapter has too little readable text to teach from.'); return; }
     Lesson.startSource(b, ch, text);
   });
-
+ 
   /* ================= FORMULA BANK ================= */
   M.route('formulas', (view) => {
     const all = Store.state.formulas;
@@ -386,7 +405,7 @@
   M.action('formula-subject', el => { V.formulaSubject = el.dataset.s; M.render(); });
   M.action('formula-bookmark-only', () => { V.formulaBookmarkOnly = !V.formulaBookmarkOnly; M.render(); });
   M.action('formula-bookmark', el => { const f = Store.state.formulas.find(f => f.id === el.dataset.id); if(!f) return; f.bookmarked = !f.bookmarked; Store.touch('formulas'); M.render(); });
-
+ 
   /* ================= SETTINGS ================= */
   M.route('settings', (view) => {
     const p = Store.state.profile; const voices = window.speechSynthesis ? speechSynthesis.getVoices() : [];
@@ -431,3 +450,4 @@
     Store.resetAll(); try { localStorage.removeItem('maa.coach'); localStorage.removeItem('maa.exam'); } catch(_){} M.toast('All data erased'); M.go('learn');
   });
 })();
+ 
