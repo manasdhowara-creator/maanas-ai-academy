@@ -2,7 +2,7 @@
 (function(){
   const V = window.Views = {};
   const NAV = [
-    { g:'Study', items:[['dashboard','Dashboard','home'],['learn','Learn','search'],['lessons','My Lessons','book'],['revise','Revise','repeat'],['tests','Tests','test'],['war','Exam War Room','calendar']] },
+    { g:'Study', items:[['dashboard','Dashboard','home'],['learn','Learn','search'],['library','Library','folder'],['lessons','My Lessons','book'],['revise','Revise','repeat'],['tests','Tests','test'],['war','Exam War Room','calendar']] },
     { g:'Support', items:[['coach','AI Coach','chat'],['mistakes','Mistake Bank','alert'],['progress','Progress','chart'],['notes','Notes','note'],['formulas','Formula Bank','layers']] },
     { g:'Labs', items:[['labs','AI Labs','brain'],['research','Research','flask'],['coding','Coding','code']] },
     { g:'', items:[['settings','Settings','gear']] },
@@ -279,6 +279,86 @@
   M.action('note-new', () => { const n = { id: M.uid('n'), title: 'Untitled note', body: '', created: Date.now(), updated: Date.now() }; Store.state.notes.unshift(n); Store.touch('notes'); V.notePreview = false; M.go('notes-' + n.id); });
   M.action('note-mode', el => { V.notePreview = el.dataset.p === '1'; M.render(); });
   M.action('note-del', el => { if(el.dataset.confirm !== '1'){ el.dataset.confirm = '1'; el.textContent = 'Tap again to delete'; return; } Store.state.notes = Store.state.notes.filter(n => n.id !== el.dataset.id); Store.touch('notes'); M.go('notes'); });
+
+  /* ================= LIBRARY ================= */
+  V.libBusy = null; V.libErr = null; V.libOpen = {}; V.libSubjectInput = '';
+  M.route('library', (view) => {
+    const subjects = [...new Set(Store.state.library.map(b => b.subject))].sort();
+    view.innerHTML = `<div class="stack">
+      <div><div class="eyebrow">Library</div><h1>Your PDFs, ready anytime</h1><p class="muted" style="margin-top:6px">Add a subject's PDF once. Every chapter stays here forever — come back whenever you want and study any chapter of any subject, no re-uploading. No limit on how many you add.</p></div>
+      <div class="card stack-sm">
+        <div class="field"><label class="label" for="libSubject">Subject</label><input class="input" id="libSubject" list="libSubjects" placeholder="e.g. Sanskrit, Maths, Science…" value="${M.esc(V.libSubjectInput)}"><datalist id="libSubjects">${subjects.map(s => `<option value="${M.esc(s)}">`).join('')}</datalist></div>
+        <label class="btn upload-btn" style="align-self:flex-start">${M.icon.upload} Add PDF <input type="file" id="libFile" accept=".pdf,.txt,.md,application/pdf,text/plain"></label>
+        <div id="libStatus">${libStatusHTML()}</div>
+      </div>
+      <div id="libList">${libListHTML()}</div>
+    </div>`;
+    view.querySelector('#libSubject').addEventListener('input', e => { V.libSubjectInput = e.target.value; });
+    view.querySelector('#libFile').addEventListener('change', e => { const f = e.target.files[0]; if(f) addToLibrary(f); e.target.value = ''; });
+  });
+
+  function libStatusHTML(){
+    if(V.libBusy) return M.loadingHTML(V.libBusy, 'Everything is processed in your browser');
+    if(V.libErr) return M.errorHTML(V.libErr);
+    return '';
+  }
+  function paintLibStatus(){ const el = document.getElementById('libStatus'); if(el) el.innerHTML = libStatusHTML(); }
+
+  function libListHTML(){
+    const lib = Store.state.library;
+    if(!lib.length) return M.emptyHTML('folder', 'No subjects yet — add a PDF above and its chapters will appear here, ready to study anytime.');
+    const bySubj = {};
+    lib.forEach(b => { (bySubj[b.subject] = bySubj[b.subject] || []).push(b); });
+    const subjects = Object.keys(bySubj).sort();
+    return `<div class="stack-sm">${subjects.map(s => {
+      const books = bySubj[s];
+      const chapCount = books.reduce((n, b) => n + b.structure.list.length, 0);
+      const open = !!V.libOpen[s];
+      return `<div class="card">
+        <button class="row-between" data-action="lib-toggle" data-s="${M.esc(s)}" style="width:100%;background:none;border:none;cursor:pointer;padding:0;text-align:left;color:inherit;font:inherit">
+          <div><h3 style="margin:0">${M.esc(s)}</h3><div class="small muted">${books.length} PDF${books.length > 1 ? 's' : ''} · ${chapCount} chapter${chapCount > 1 ? 's' : ''}</div></div>
+          <span style="display:inline-flex;transform:rotate(${open ? 90 : 0}deg);transition:transform .15s">${M.icon.arrow}</span>
+        </button>
+        ${open ? `<div class="stack-sm" style="margin-top:12px">${books.map(b => `
+          <div class="stack-sm">
+            <div class="row-between"><div class="small muted">${M.icon.book} ${M.esc(b.name)}${b.scanned ? ' · scanned' : ''}</div><button class="icon-btn" data-action="lib-remove" data-book="${b.id}" aria-label="Remove this PDF">${M.icon.trash}</button></div>
+            <div class="mini-list">${b.structure.list.map((c, i) => `<div class="mini-item" style="cursor:default"><div class="grow"><div class="t">${M.esc(c.title)}</div><div class="s">Pages ${c.start}–${c.end}</div></div><button class="btn sm primary" data-action="lib-study" data-book="${b.id}" data-i="${i}">Study</button></div>`).join('')}</div>
+          </div>`).join('')}</div>` : ''}
+      </div>`;
+    }).join('')}</div>`;
+  }
+
+  async function addToLibrary(file){
+    const subject = (V.libSubjectInput || '').trim();
+    if(!subject){ V.libErr = 'Type a subject name first (e.g. Sanskrit).'; paintLibStatus(); return; }
+    V.libBusy = 'Reading your PDF…'; V.libErr = null; paintLibStatus();
+    try {
+      const book = await Source.read(file, m => { V.libBusy = m; paintLibStatus(); });
+      book.structure = Source.chapters(book);
+      book.id = M.uid('lib'); book.subject = subject; book.addedAt = Date.now();
+      Object.defineProperty(book, 'doc', { value: book.doc, enumerable: false }); // kept in memory this session only (for OCR of scanned pages); never saved to storage
+      Store.saveLibraryBook(book);
+      V.libSubjectInput = ''; V.libOpen[subject] = true;
+    } catch(e){ V.libErr = e.message; }
+    V.libBusy = null; M.render();
+  }
+
+  M.action('lib-toggle', el => { V.libOpen[el.dataset.s] = !V.libOpen[el.dataset.s]; M.render(); });
+  M.action('lib-remove', el => { Store.removeLibraryBook(el.dataset.book); M.render(); });
+  M.action('lib-study', async el => {
+    const b = Store.state.library.find(x => x.id === el.dataset.book); if(!b) return;
+    const ch = b.structure.list[Number(el.dataset.i)];
+    if(!AI.ready()){ M.toast('Studying from your PDF needs the AI teacher. ' + AI.friendly('offline')); return; }
+    let text = Source.text(b, ch);
+    if(b.scanned || text.length < 200){
+      if(!b.doc){ M.toast('This is a scanned PDF from an earlier session. Remove it and add it again to read this chapter (only needed once, right after adding).'); return; }
+      V.libBusy = 'Reading scanned pages…'; M.render();
+      try { text = await Source.ocr(b, ch, m => { V.libBusy = m; M.render(); }); } catch(e){ V.libBusy = null; M.toast(e.message); M.render(); return; }
+      V.libBusy = null;
+    }
+    if(text.length < 200){ M.toast('This chapter has too little readable text to teach from.'); return; }
+    Lesson.startSource(b, ch, text);
+  });
 
   /* ================= FORMULA BANK ================= */
   M.route('formulas', (view) => {
