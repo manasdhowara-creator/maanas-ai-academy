@@ -4,7 +4,7 @@
   const blank = () => ({
     v: 1,
     profile: { name:'', email:'', level:'', subjects:[], language:'English', pref:'mixed', examDate:null, onboarded:false, voiceURI:null, created: Date.now() },
-    topics: {}, mistakes: [], notes: [], research: [], labs: {}, projects: {}, formulas: [],
+    topics: {}, mistakes: [], notes: [], research: [], labs: {}, projects: {}, formulas: [], library: [],
     coding: { solved:{}, drafts:{} }, exams: [], examPlan: { date:null, topicIds:[], extra:[] },
     deleted: [], meta: {}
   });
@@ -29,6 +29,7 @@
         try {
           const lite = JSON.parse(JSON.stringify(s));
           Object.values(lite.topics).forEach(t => { if(t.source) t.source.text = ''; if(t.scenes) t.scenes = null; });
+          (lite.library || []).forEach(b => { b.pages = []; }); // keep chapter titles/pages ranges, drop the heavy full text
           localStorage.setItem(LS_KEY, JSON.stringify(lite));
         } catch(_){}
       }
@@ -50,6 +51,7 @@
       if(key === 'research') return { items: s.research.slice(-30) };
       if(key === 'formulas') return { items: s.formulas };
       if(key.startsWith('t_')){ const t = s.topics[key.slice(2)]; return t ? { topic: t } : null; }
+      if(key.startsWith('lib_')){ const b = s.library.find(x => x.id === key.slice(4)); return b ? { book: b } : null; }
       return null;
     },
 
@@ -61,6 +63,7 @@
       else if(key === 'research') s.research = data.items || [];
       else if(key === 'formulas') s.formulas = data.items || [];
       else if(key.startsWith('t_') && data.topic){ if(!s.deleted.includes(data.topic.id)) s.topics[key.slice(2)] = data.topic; }
+      else if(key.startsWith('lib_') && data.book){ const i = s.library.findIndex(x => x.id === data.book.id); if(i >= 0) s.library[i] = data.book; else s.library.push(data.book); }
     },
 
     async connect(){
@@ -83,6 +86,7 @@
         // local keys never pushed
         ['profile','mistakes','notes','research','formulas'].forEach(k => { if(!remote.has(k) && this.state.meta[k]) this._dirty.add(k); });
         Object.keys(this.state.topics).forEach(id => { if(!remote.has('t_' + id)) this._dirty.add('t_' + id); });
+        this.state.library.forEach(b => { if(!remote.has('lib_' + b.id)) this._dirty.add('lib_' + b.id); });
         // remote deletions
         this.state.deleted.forEach(id => { delete this.state.topics[id]; });
         this.sync = 'account'; this.saveLocal(); M.emit('sync'); M.emit('store', '*');
@@ -113,6 +117,20 @@
       } finally { Store._writing = false; }
     }, 1200),
 
+    saveLibraryBook(book){
+      book.updatedAt = Date.now();
+      const i = this.state.library.findIndex(b => b.id === book.id);
+      if(i >= 0) this.state.library[i] = book; else this.state.library.push(book);
+      this.touch('lib_' + book.id);
+    },
+    async removeLibraryBook(id){
+      this.state.library = this.state.library.filter(b => b.id !== id);
+      delete this.state.meta['lib_' + id];
+      this.saveLocal();
+      M.emit('store', 'lib_' + id);
+      if(this._col){ try { await this._col.doc('lib_' + id).delete(); } catch(_){} }
+    },
+
     async removeTopic(id){
       delete this.state.topics[id];
       this.state.deleted.push(id);
@@ -130,6 +148,7 @@
       const now = Date.now();
       ['profile','mistakes','notes','research','formulas'].forEach(k => this.state.meta[k] = now);
       Object.keys(this.state.topics).forEach(id => this.state.meta['t_' + id] = now);
+      (this.state.library || []).forEach(b => this.state.meta['lib_' + b.id] = now);
       this.saveLocal();
       if(this.sync === 'account'){ Object.keys(this.state.meta).forEach(k => this._dirty.add(k)); this._flush(); }
       M.emit('store', '*');
