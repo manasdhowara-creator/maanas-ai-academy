@@ -21,6 +21,17 @@ const GROQ_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 const FETCH_TIMEOUT_MS = 45000;
 const MODEL_LIST_TTL_MS = 60 * 60 * 1000; // re-check available models once an hour
 
+/* ---------- Email (Master Notes / Formula Sheet delivery) ----------
+   Uses Resend (https://resend.com) — a plain HTTPS API call, no extra
+   npm package needed. Nothing fake here: if RESEND_API_KEY is not set,
+   the endpoint honestly reports "not configured" and sends nothing;
+   the frontend only shows success once Resend actually confirms delivery.
+   NOTE: until a sending domain is verified on the Resend account, Resend
+   only allows delivery to the account owner's own email address — this
+   is a Resend account-level limit, not a bug here. */
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const RESEND_FROM = process.env.RESEND_FROM || 'Maanas AI Academy <onboarding@resend.dev>';
+
 // Last-resort hardcoded list, used only if the live model list can't be fetched at all
 // (e.g. a transient network issue) — kept a few models deep just in case.
 const HARDCODED_FALLBACK = ['gemini-flash-latest', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'];
@@ -60,7 +71,47 @@ async function getModels() {
 }
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: !!(GEMINI_API_KEY || GROQ_API_KEY) });
+  res.json({ ok: !!(GEMINI_API_KEY || GROQ_API_KEY), email: !!RESEND_API_KEY });
+});
+
+/* Sends Master Notes / Formula Sheet emails via Resend. The recipient is
+   always the learner's OWN registered email (sent by the frontend from
+   their saved profile — never typed in by hand here), so each learner
+   only ever receives their own notes. Returns success ONLY after Resend
+   actually confirms the send — never a fake "sent" response. */
+app.post('/api/email', async (req, res) => {
+  try {
+    if (!RESEND_API_KEY) return res.status(503).json({ error: 'email_not_configured' });
+    const { to, subject, html, text } = req.body || {};
+    if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return res.status(400).json({ error: 'bad_recipient' });
+    if (!subject || !(html || text)) return res.status(400).json({ error: 'missing_fields' });
+
+    const upstream = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${RESEND_API_KEY}` },
+      body: JSON.stringify({
+        from: RESEND_FROM,
+        to: [to],
+        subject: String(subject).slice(0, 200),
+        html: html || undefined,
+        text: text || (html ? undefined : ' '),
+      }),
+    });
+
+    if (!upstream.ok) {
+      const detail = await upstream.text().catch(() => '');
+      console.error('Resend send failed:', upstream.status, detail.slice(0, 400));
+      // Resend's own error for "domain not verified, can only send to account owner"
+      if (upstream.status === 403 && /verify a domain|only send testing emails/i.test(detail)) {
+        return res.status(502).json({ error: 'send_failed', detail: 'Sender domain not verified on Resend yet — it can currently only email the Resend account owner\'s own address.' });
+      }
+      return res.status(502).json({ error: 'send_failed' });
+    }
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('Email send failed:', e.message);
+    return res.status(502).json({ error: 'send_failed' });
+  }
 });
 
 /* Groq — a completely separate, independent free-tier AI provider (different
