@@ -6,7 +6,7 @@
   const KINDS = ['maths','physics','chemistry','biology','history','geography','ai','coding','language','general'];
   const METHODS = ['a vivid analogy','a fully worked example, step by step','a visual explanation (include a diagram)','a real-life example','Socratic questions that lead the learner to the answer','the simplest possible explanation, like to a younger student'];
   const LOOP = [['diagnose','Diagnose'],['learn','Learn'],['practice','Practice'],['hard','Hard test'],['fix','Fix & retest'],['apply','Apply'],['explain','Explain'],['teachback','Teach back'],['challenge','Challenge'],['award','Mastered'],['review','Revise']];
-
+ 
   /* ---------- async task helper (dedupes, survives navigation, re-renders) ---------- */
   L.task = (key, fn) => {
     if(L.inflight[key]) return L.inflight[key];
@@ -19,7 +19,7 @@
   };
   L.refresh = () => { if(M.current.name === 'topic') M.render(); else M.emit('store', 'task'); };
   const peek = () => document.querySelector('[data-peek]');
-
+ 
   /* ================= creating topics ================= */
   L.startSearch = (query) => {
     query = String(query || '').trim();
@@ -35,7 +35,7 @@
     Store.saveTopic(t);
     M.go('topic-' + t.id);
   };
-
+ 
   L.startBuiltin = (key) => {
     const existing = Store.topicsList().find(t => t.builtin === key);
     if(existing){ M.go('topic-' + existing.id); return; }
@@ -44,13 +44,13 @@
       concepts: pk.concepts, diagnostic: { questions: pk.diagnostic.map(q => Quiz.validate(q, { concepts: pk.concepts, asked: [] })).filter(Boolean), answers: {}, done: false } });
     Store.saveTopic(t); M.go('topic-' + t.id);
   };
-
+ 
   L.startSource = (book, ch, text) => {
     const t = Mastery.newTopic({ title: ch.title, query: book.name + ' ' + ch.title, planned: false,
       source: { name: book.name, chapter: ch.title, pages: `${ch.start}–${ch.end}`, text: text.slice(0, 45000), truncated: text.length > 45000, sections: ch.sections || [] } });
     Store.saveTopic(t); M.go('topic-' + t.id);
   };
-
+ 
   /* ================= AI: plan + diagnostic ================= */
   L.plan = (t) => L.task('plan-' + t.id, async () => {
     const src = t.source ? `\nSOURCE MATERIAL (from the learner's upload "${t.source.name}", ${t.source.chapter}). It is the factual boundary for source-specific content. Detect the structure only from headings that really appear in it.\n"""${t.source.text.slice(0, 28000)}"""\n` : '';
@@ -83,7 +83,7 @@ ${Quiz.SCHEMA}`;
     t.diagnostic = { questions: dq, answers: {}, done: dq.length === 0, skipped: dq.length === 0 };
     t.planned = true; Store.saveTopic(t);
   });
-
+ 
   L.startPart = (t, idx) => {
     const course = t.path.course, part = t.path.parts[idx];
     const exists = Store.topicsList().find(x => x.path && x.path.course === course && x.path.index === idx);
@@ -91,7 +91,7 @@ ${Quiz.SCHEMA}`;
     const n = Mastery.newTopic({ title: part, query: `${course} — part ${idx + 1}: ${part}`, planned: false, level: t.level, pathSeed: { course, parts: t.path.parts, index: idx } });
     Store.saveTopic(n); M.go('topic-' + n.id);
   };
-
+ 
   /* ================= AI: lesson ================= */
   L.buildLesson = (t) => L.task('lesson-' + t.id, async () => {
     if(t.builtin){ const pk = Pack[t.builtin]; t.lesson = { sections: pk.sections.map(s => ({ ...s, origin:'extra', checkpoint: Quiz.validate(s.checkpoint, t) })), summary:'', qc: null }; t.lesson.qc = qcLesson(t); Store.saveTopic(t); return; }
@@ -133,7 +133,7 @@ Q format: ${Quiz.SCHEMA}`;
     t.lesson = lesson; t.lesson.qc = qcLesson(t);
     Store.saveTopic(t);
   });
-
+ 
   function qcLesson(t){
     const secs = t.lesson.sections;
     const covered = new Set(); secs.forEach(s => (s.concepts || []).forEach(c => covered.add(c)));
@@ -146,12 +146,12 @@ Q format: ${Quiz.SCHEMA}`;
     if(t.source){ const src = secs.filter(s => s.origin === 'source' || s.origin === 'unverified'); qc.quotes = [secs.filter(s => s.verified).length, src.length]; }
     return qc;
   }
-
+ 
   L.buildScenes = (t) => L.task('scenes-' + t.id, async () => {
     if(t.builtin){ t.scenes = Video.validate(Pack[t.builtin].scenes, t); Store.saveTopic(t); return; }
     t.scenes = await Video.generate(t, { peek }); Store.saveTopic(t);
   });
-
+ 
   /* ================= questions for a stage ================= */
   function specFor(t, stage){
     const ag = t.antiGuess > 0;
@@ -168,7 +168,7 @@ Q format: ${Quiz.SCHEMA}`;
     };
     return { ...S[stage], stage };
   }
-
+ 
   L.makeRun = (t, stage) => L.task('run-' + t.id, async () => {
     let qs;
     if(t.builtin && !AI.ready()){
@@ -181,7 +181,7 @@ Q format: ${Quiz.SCHEMA}`;
     t.run = { stage, questions: qs, idx: 0, answered: {}, started: Date.now() };
     Store.saveTopic(t);
   });
-
+ 
   /* ================= grading inside a run ================= */
   L.checkRun = async (btn) => {
     const t = Store.topic(btn.dataset.tid); if(!t || !t.run) return;
@@ -196,13 +196,13 @@ Q format: ${Quiz.SCHEMA}`;
     Mastery.record(t, q, r, run.stage === 'diagnose' ? 'diagnose' : run.stage);
     Store.saveTopic(t); M.render();
   };
-
+ 
   L.nextRun = (tid) => {
     const t = Store.topic(tid); if(!t || !t.run) return;
     if(t.run.idx < t.run.questions.length - 1){ t.run.idx++; Store.saveTopic(t); M.render(); return; }
     finishRun(t);
   };
-
+ 
   function finishRun(t){
     const run = t.run; const results = run.questions.map(q => ({ ...(run.answered[q.id] || { correct:false, score:0 }), type: q.type, concept: q.concept }));
     let summary;
@@ -213,7 +213,7 @@ Q format: ${Quiz.SCHEMA}`;
     t.lastRun = { ...summary, at: Date.now(), results: results.map(r => ({ correct: r.correct, type: r.type })) };
     t.run = null; Store.saveTopic(t); M.render();
   }
-
+ 
   /* diagnostic uses its own stored questions */
   L.finishDiagnostic = (t) => {
     const d = t.diagnostic; const known = new Set(), weak = new Set();
@@ -223,7 +223,7 @@ Q format: ${Quiz.SCHEMA}`;
     d.result = { right, n: d.questions.length, known: [...known], weak: [...weak] };
     d.done = true; t.lessonProgress.started = true; Store.saveTopic(t); M.render();
   };
-
+ 
   /* ================= FIX: find weakness → reteach differently → fresh retest ================= */
   L.makeFix = (t) => L.task('fix-' + t.id, async () => {
     const f = t.pendingFix[0]; if(!f) return;
@@ -259,7 +259,7 @@ Q format: ${Quiz.SCHEMA}`;
     t.fixRun = { concept: f.concept, method, diagnosis: String(r.diagnosis || ''), reteach: String(r.reteach), visual: Visuals.valid(r.visual) ? r.visual : null, question: q, phase:'teach' };
     Store.saveTopic(t);
   });
-
+ 
   L.checkFix = async (btn) => {
     const t = Store.topic(btn.dataset.tid); const fr = t && t.fixRun; if(!fr) return;
     const root = btn.closest('.stage-card'); const ans = Quiz.readAnswer(root, fr.question);
@@ -275,7 +275,7 @@ Q format: ${Quiz.SCHEMA}`;
     else if(f){ f.tries++; f.methodIdx++; f.userAnswer = r.userAnswer; f.stem = fr.question.stem; f.correctAnswer = Quiz.answerText(fr.question); f.feedback = r.feedback || ''; f.errorType = r.errorType || f.errorType; Mastery.addMistake(t, fr.question, r, 'fix'); }
     Store.saveTopic(t); M.render();
   };
-
+ 
   /* ================= TEACH-BACK ================= */
   L.evalTeachback = async (btn) => {
     const t = Store.topic(btn.dataset.tid); const ta = document.getElementById('tb-text'); const text = ta ? ta.value.trim() : '';
@@ -302,13 +302,13 @@ Reply ONLY JSON {"score":0-1 (0.7+ = could genuinely teach it),"accuracy":"short
     if(r.correct) Mastery.grant(t, 'teachback', `score ${Math.round(r.score * 10)}/10`);
     Store.saveTopic(t); M.render();
   };
-
+ 
   /* ================= award + mastery sheet ================= */
   L.award = (t) => {
     if(Mastery.checkAward(t)){ Store.saveTopic(t); L.buildSheet(t); L.buildMasterNotes(t); }
     M.render();
   };
-
+ 
   /* ================= Master Notes (complete, standalone chapter notes) ================= */
   L.buildMasterNotes = (t) => L.task('notes-' + t.id, async () => {
     const myMistakes = Store.state.mistakes.filter(m => m.topicId === t.id).slice(-10).map(m => `${m.conceptName}: ${m.errorType}`).join('; ');
@@ -358,7 +358,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     saveFormulasToBank(t, notes.formulas);
     saveMasterNotesText(t); Store.saveTopic(t);
   });
-
+ 
   function saveFormulasToBank(t, formulas){
     if(!formulas || !formulas.length) return;
     const bank = Store.state.formulas;
@@ -369,7 +369,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     });
     Store.touch('formulas');
   }
-
+ 
   function saveMasterNotesText(t){
     const notes = Store.state.notes; const ex = notes.find(n => n.masterNotesOf === t.id);
     const n = t.masterNotes; const body = [
@@ -417,7 +417,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     else notes.unshift({ id: M.uid('n'), title: 'Mastery sheet: ' + t.title, body, sheetOf: t.id, topicId: t.id, created: Date.now(), updated: Date.now() });
     Store.touch('notes');
   }
-
+ 
   L.makeRefresher = (t) => L.task('refresher-' + t.id, async () => {
     if(!AI.ready()){ const s = t.sheet || (t.builtin && Pack[t.builtin].sheet); t.refresher = s ? '**Quick refresher**\n\n' + (s.keyConcepts || []).map(x => '- ' + x).join('\n') : 'Re-read your lesson summary, then take the recheck.'; Store.saveTopic(t); return; }
     const last = (t.review && t.review.history || []).slice(-1)[0];
@@ -425,7 +425,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     t.refresher = (await AI.text(`${AI.learner(t)}\nWrite a 150-word high-yield refresher for "${t.title}" for a learner who had mastered it but is forgetting. Focus on: ${missed.join(', ') || t.concepts.map(c => c.name).join(', ')}. Use retrieval cues (questions to self-test) not just rereading. Markdown.`, { tier:'default', cache:false }));
     Store.saveTopic(t);
   });
-
+ 
   /* ================= RENDERING ================= */
   M.route('topic', (view, id) => {
     const t = Store.topic(id);
@@ -458,18 +458,18 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     else if(tab === 'notes') body.innerHTML = topicNotesHTML(t);
     else renderStudy(body, t);
   });
-
+ 
   function partsHTML(t){
     const p = t.path || t.pathSeed; if(!p) return '';
     return `<details class="fold"><summary>Course: ${M.esc(p.course)} · part ${p.index + 1} of ${p.parts.length}</summary><div class="stack-sm">${p.parts.map((x, i) => `<button class="btn sm ${i === p.index ? 'primary' : ''}" style="justify-content:flex-start" data-action="start-part" data-tid="${t.id}" data-i="${i}">${i + 1}. ${M.esc(x)}</button>`).join('')}<p class="hint">Master each part before moving to the next. Every part gets its own full mastery loop.</p></div></details>`;
   }
-
+ 
   function loopHTML(t){
     const ns = Mastery.nextStep(t).stage; const ev = t.ev || {};
     const done = { diagnose: t.diagnostic && t.diagnostic.done, learn: t.lessonProgress.done, practice: ev.practice, hard: ev.hard, fix: !t.pendingFix.length && t.attempts.some(a => a.stage === 'fix'), apply: ev.application, explain: ev.understanding, teachback: ev.teachback, challenge: ev.challenge, award: !!t.masteredAt, review: !!t.retainedAt };
     return `<div class="loop" aria-label="Your mastery loop">${LOOP.map(([k, l]) => `<span class="loop-step ${ns === k || (ns === 'refresh' && k === 'review') || (ns === 'recall' && k === 'award') ? 'now' : done[k] ? 'done' : ''} ${k === 'fix' && t.pendingFix.length ? 'fix' : ''}">${done[k] ? '✓ ' : ''}${l}</span>`).join('')}</div>`;
   }
-
+ 
   function planHTML(t){
     const e = L.errors['plan-' + t.id];
     if(e) return `<div class="stage-card">${M.errorHTML(e.message, 'retry-plan', 'Try again', `data-tid="${t.id}"`)}</div>`;
@@ -481,17 +481,17 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     }
     return `<div class="stage-card">${M.loadingHTML(t.source ? 'Reading your source…' : 'Analyzing topic…', t.source ? 'Detecting sections and core concepts from your material' : 'Choosing the core concepts and a quick 2-minute check')}</div>`;
   }
-
+ 
   function stageCard(icon, title, sub, inner){
     return `<div class="stage-card"><div class="stage-title"><div class="ico">${M.icon[icon] || M.icon.target}</div><div><h2>${M.esc(title)}</h2>${sub ? `<p class="muted small">${M.esc(sub)}</p>` : ''}</div></div>${inner}</div>`;
   }
-
+ 
   function lastRunHTML(t){
     const r = t.lastRun; if(!r || Date.now() - r.at > 30 * 60000) return '';
     const names = { practice:'Practice', hard:'Hard test', apply:'Application', explain:'Explanation', recall:'Recall check', challenge:'Unfamiliar challenge', review:'Revision check', refresh:'Recheck' };
     return `<div class="notice ${r.passed ? 'ok' : 'warn'}">${r.passed ? M.icon.check : M.icon.info}<div class="stack-sm"><div><b>${names[r.stage] || 'Round'}: ${r.right}/${r.n} ${r.passed ? '. Passed' : '. Not passed yet'}</b></div>${r.note ? `<div class="small">${M.esc(r.note)}</div>` : ''}${!r.passed && t.pendingFix.length ? '<div class="small">Your mistakes were analysed. Next: fix the weak concept with a different explanation and a fresh question.</div>' : ''}</div></div>`;
   }
-
+ 
   function renderStudy(body, t){
     const n = Mastery.nextStep(t);
     // an active run takes over
@@ -515,7 +515,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
   }
   const stageName = s => ({ practice:'Practice', hard:'Hard test', apply:'Apply it', explain:'Explain it', recall:'Quick recall', challenge:'Unfamiliar challenge', review:'Revision', refresh:'Recheck' })[s] || 'Questions';
   const stageIcon = s => ({ practice:'test', hard:'target', apply:'flask', explain:'chat', recall:'repeat', challenge:'spark', review:'repeat' })[s] || 'test';
-
+ 
   function diagnoseHTML(t){
     const d = t.diagnostic;
     const qs = d.questions; const answered = qs.filter(q => d.answers[q.id]).length;
@@ -525,7 +525,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
       `${Quiz.render(q, { idx: answered, total: qs.length })}<div class="row"><button class="btn primary" data-action="diag-check" data-tid="${t.id}" data-qid="${q.id}">Submit</button><button class="btn ghost" data-action="diag-idk" data-tid="${t.id}" data-qid="${q.id}">I don’t know yet</button></div>
       <button class="btn ghost sm" data-action="skip-diag" data-tid="${t.id}">Skip the check. I’m completely new to this</button>`);
   }
-
+ 
   function runHTML(t){
     const run = t.run, q = run.questions[run.idx], a = run.answered[q.id];
     const dots = run.questions.map((x, i) => { const r = run.answered[x.id]; return `<i class="${r ? (r.correct ? 'ok' : 'bad') : i === run.idx ? 'done' : ''}"></i>`; }).join('');
@@ -538,7 +538,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     } else html += `<button class="btn primary block" data-action="run-check" data-tid="${t.id}">Check answer</button>`;
     return stageCard(stageIcon(run.stage), title, run.stage === 'challenge' ? 'A problem you haven’t seen. Use what you know in a new way.' : '', html);
   }
-
+ 
   function fixHTML(t){
     const f = t.pendingFix[0]; const fr = t.fixRun;
     const cname = Mastery.conceptName(t, f.concept);
@@ -564,7 +564,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     } else inner += `<button class="btn primary block" data-action="check-fix" data-tid="${t.id}">Check answer</button>`;
     return stageCard('target', 'Fix: ' + cname, t.pendingFix.length > 1 ? `${t.pendingFix.length} weak spots to fix` : '', inner);
   }
-
+ 
   function teachbackHTML(t){
     const tb = t.teachback;
     let inner = `<p>“<b>Teach ${M.esc(t.title)} to me as if you are the teacher.</b>” Explain the main ideas, give an example, and warn me about a common mistake.</p>
@@ -577,7 +577,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     inner += `<button class="btn primary block" data-action="eval-tb" data-tid="${t.id}">Check my teaching</button>`;
     return stageCard('teacher', 'Teach it back', 'If you can teach it, you know it.', inner);
   }
-
+ 
   function refreshHTML(t){
     const k = 'refresher-' + t.id;
     if(!t.refresher && !L.inflight[k]) L.makeRefresher(t);
@@ -585,7 +585,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     return stageCard('repeat', 'This topic is AT RISK', t.atRiskReason === 'overdue' ? 'It has been a long time since your last check. Your history is kept, this is just a refresh.' : 'Your last review showed some forgetting. Your history is kept, this is just a refresh.',
       `${L.errors[k] ? M.errorHTML(L.errors[k].message, 'retry-refresher', 'Try again', `data-tid="${t.id}"`) : ''}<div class="prose">${M.md(t.refresher || '')}</div><button class="btn primary block" data-action="start-stage" data-tid="${t.id}" data-stage="refresh">Take the recheck (2 questions)</button>`);
   }
-
+ 
   function doneHTML(t){
     const pl = Mastery.percentLabel(t);
     const hasFormulas = Store.state.formulas.some(f => f.topicId === t.id);
@@ -604,11 +604,11 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
         ${t.path && t.path.index < t.path.parts.length - 1 ? `<button class="btn primary" data-action="start-part" data-tid="${t.id}" data-i="${t.path.index + 1}">Next part: ${M.esc(t.path.parts[t.path.index + 1])}</button>` : ''}
       </div>`);
   }
-
+ 
   function evidenceListHTML(t){
     return `<div class="ev-list">${Mastery.EVIDENCE.map(e => { const on = t.ev[e.key]; return `<div class="ev-row ${on ? 'on' : ''}"><span class="mark">${on ? '✓' : ''}</span><div><div>${e.label}</div><div class="why">${on ? 'Shown ' + M.fmtDate(on.at) + (on.detail ? ' · ' + M.esc(on.detail) : '') : e.how}</div></div></div>`; }).join('')}${t.retainedAt ? `<div class="ev-row on"><span class="mark" style="background:var(--gold)">+</span><div><div>Retention (102%)</div><div class="why">Passed a spaced review on ${M.fmtDate(t.retainedAt)}</div></div></div>` : ''}</div>`;
   }
-
+ 
   /* ---------- lesson (teacher + reading) ---------- */
   function renderLesson(body, t, inStudy){
     const k = 'lesson-' + t.id;
@@ -636,7 +636,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     if(f) f.disabled = answered < Math.min(cps.length, Math.ceil(cps.length * 0.6));
   };
   const qcChip = (ok, text) => `<span class="tag ${ok ? 'ok' : 'warn'}">${ok ? '✓' : '!'} ${M.esc(text)}</span>`;
-
+ 
   function renderTeacher(main, t){
     const k = 'scenes-' + t.id;
     if(!t.scenes){
@@ -650,7 +650,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
       onFinish(){ M.toast('Lesson finished. Answer any remaining checkpoints, then start proving it.'); },
     });
   }
-
+ 
   function readingHTML(t){
     const secs = t.lesson.sections;
     const nav = secs.map((s, i) => { const cp = s.checkpoint; const done = cp && t.lessonProgress.checkpoints[cp.id] !== undefined; return `<a class="ml-navdot ${done ? (t.lessonProgress.checkpoints[cp.id] ? 'ok' : 'seen') : ''}" href="#ml-sec-${t.id}-${i}" title="${M.esc(s.heading)}">${String(i + 1).padStart(2, '0')}</a>`; }).join('');
@@ -665,14 +665,14 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
           <h3>${M.esc(s.heading)}</h3>
           ${s.origin === 'source' && s.sourceQuote ? `<div class="src-quote">“${M.esc(s.sourceQuote)}” <span class="tag ok">✓ verified in your source</span></div>` : ''}
           <div class="prose">${M.md(s.body)}</div>
-          ${s.visual ? `<div class="ml-visual">${Visuals.render(s.visual)}</div>` : ''}
+          ${s.visual ? `<div class="ml-visual">${Visuals.render(s.visual, { light: true })}</div>` : ''}
           ${s.example ? `<div class="example"><div class="eyebrow">Example</div><div class="prose">${M.md(s.example)}</div></div>` : ''}
           ${cp ? `<div class="card soft" data-cp-wrap="${cp.id}"><div class="eyebrow" style="margin-bottom:8px">Quick check${done ? (t.lessonProgress.checkpoints[cp.id] ? ' · ✓ correct' : ' · answered') : ''}</div>${done ? Quiz.stemHTML(cp) : Quiz.render(cp)}${done ? `<div class="small muted" style="margin-top:8px"><b>Answer:</b> ${M.esc(Quiz.answerText(cp))}. ${M.esc(cp.explanation || '')}</div>` : `<div style="margin-top:10px"><button class="btn sm primary" data-action="cp-check" data-tid="${t.id}" data-sec="${i}">Check</button></div>`}</div>` : ''}
         </section>`; }).join('')}
       ${t.lesson.summary ? `<section id="ml-sec-${t.id}-recap" class="card lesson-sec"><div class="eyebrow">Recap</div><div class="prose">${M.md(t.lesson.summary)}</div></section>` : ''}
     </div>`;
   }
-
+ 
   function proofHTML(t){
     const pl = Mastery.percentLabel(t);
     const recent = t.attempts.slice(-12).reverse();
@@ -686,7 +686,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
         <button class="btn danger sm" data-action="delete-topic" data-tid="${t.id}" style="align-self:flex-start">${M.icon.trash} Delete this lesson</button>
       </div></div>`;
   }
-
+ 
   function sheetHTML(t){
     const k = 'sheet-' + t.id;
     if(!t.masteredAt && !t.sheet) return `<div class="card">${M.emptyHTML('note', 'Your one-page revision sheet unlocks when you master this topic.<br>It includes the mistakes <b>you</b> actually made.')}</div>`;
@@ -697,7 +697,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
       <div class="grid grid-2">${list('Key concepts', s.keyConcepts)}${s.definitions && s.definitions.length ? `<div class="stack-sm"><h3>Definitions</h3><ul>${s.definitions.map(d => `<li><b>${M.esc(d.term)}</b>: ${M.esc(d.meaning)}</li>`).join('')}</ul></div>` : ''}${list('Formulas', s.formulas)}${list('Important facts', s.facts)}${list('Common mistakes', s.mistakes)}${list('Tricky points', s.tricky)}${list('Memory hooks', s.hooks)}${list('Important questions', s.questions)}</div>
       ${s.visual ? `<div class="player" style="box-shadow:none"><div class="stage">${Visuals.render(s.visual)}</div></div>` : ''}</div>`;
   }
-
+ 
   function masterNotesHTML(t){
     const k = 'notes-' + t.id;
     if(!t.masteredAt && !t.masterNotes) return `<div class="card">${M.emptyHTML('book', 'Master Notes unlock when you master this topic.<br>A complete, standalone set of notes — someone who never read the lesson could study these alone.')}</div>`;
@@ -710,14 +710,14 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
         <div class="row">${Store.state.profile.email ? `<button class="btn sm primary" data-action="email-notes" data-tid="${t.id}">${M.icon.book} Email Master Notes</button>` : `<a class="btn sm" href="#settings">Add email to send notes</a>`}</div></div>
       ${n.overview ? `<div class="card ml-hero"><div class="eyebrow">Chapter overview</div><div class="prose">${M.md(n.overview)}</div></div>` : ''}
       <div class="card grid grid-2">${list('Core concepts', n.coreConcepts)}${n.definitions.length ? `<div class="stack-sm"><h3>Definitions</h3><ul>${n.definitions.map(d => `<li><b>${M.esc(d.term)}</b>: ${M.esc(d.meaning)}</li>`).join('')}</ul></div>` : ''}</div>
-      ${n.diagrams.length ? `<div class="card stack"><h3>Diagrams</h3>${n.diagrams.map(v => `<div class="ml-visual">${Visuals.render(v)}</div>`).join('')}</div>` : ''}
+      ${n.diagrams.length ? `<div class="card stack"><h3>Diagrams</h3>${n.diagrams.map(v => `<div class="ml-visual">${Visuals.render(v, { light: true })}</div>`).join('')}</div>` : ''}
       ${n.examples.length ? `<div class="card stack"><h3>Worked examples</h3>${n.examples.map(e => `<div class="example"><div class="eyebrow">${M.esc(e.title)}</div><div class="prose">${M.md(e.body)}</div></div>`).join('')}</div>` : ''}
       ${n.formulas.length ? `<div class="card stack"><h3>Formulas</h3>${n.formulas.map(f => formulaCardHTML(f)).join('')}</div>` : ''}
       <div class="card grid grid-2">${list('Key facts', n.keyFacts)}${list('Common mistakes', n.mistakes)}${list('Exam points', n.examPoints)}${list('Important questions', n.importantQuestions)}${list('Memory aids', n.memoryAids)}</div>
       ${n.checklist.length ? `<div class="card stack-sm"><h3>Everything you must know</h3><ul class="notes-checklist">${n.checklist.map(x => `<li>${M.esc(x)}</li>`).join('')}</ul></div>` : ''}
     </div>`;
   }
-
+ 
   function formulaCardHTML(f){
     return `<div class="formula-card">
       <div class="fexpr">${M.esc(f.formula)}</div>
@@ -727,20 +727,20 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
       ${f.mistake ? `<div class="small" style="color:var(--warn)"><b>Common mistake:</b> ${M.esc(f.mistake)}</div>` : ''}
     </div>`;
   }
-
+ 
   L.formulaCardHTML = formulaCardHTML;
-
+ 
   function topicFormulasHTML(t){
     const items = Store.state.formulas.filter(f => f.topicId === t.id);
     if(!items.length) return `<div class="card">${M.emptyHTML('target', 'No formulas for this topic yet.<br>They\'re extracted automatically when you build Master Notes.')}</div>`;
     return `<div class="stack">${items.map(formulaCardHTML).join('')}<a class="btn" href="#formulas">Open full Formula Bank</a></div>`;
   }
-
+ 
   function topicNotesHTML(t){
     const n = Store.state.notes.find(n => n.topicId === t.id && !n.sheetOf);
     return `<div class="card stack-sm"><label class="label" for="tnote">My notes for this topic</label><textarea class="textarea" id="tnote" rows="10" data-tid="${t.id}" placeholder="Write in your own words. Writing it yourself helps you remember.">${n ? M.esc(n.body) : ''}</textarea><div class="hint">Saved automatically.</div></div>`;
   }
-
+ 
   document.addEventListener('input', M.debounce((e) => {
     if(e.target && e.target.id === 'tnote'){
       const tid = e.target.dataset.tid; const t = Store.topic(tid); if(!t) return;
@@ -749,7 +749,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
       n.body = e.target.value; n.updated = Date.now(); Store.touch('notes');
     }
   }, 500));
-
+ 
   /* ================= actions ================= */
   const T = el => Store.topic(el.dataset.tid);
   M.action('topic-tab', el => { L.tab[el.dataset.tid] = el.dataset.tab; M.render(); });
@@ -805,3 +805,4 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
   });
   M.action('coach-topic', el => { Coach.setContext(el.dataset.tid); M.go('coach'); });
 })();
+ 
