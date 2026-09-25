@@ -3,7 +3,7 @@
   const ASSERTION_OPTS = ['Both A and R are true, and R correctly explains A','Both A and R are true, but R does not explain A','A is true, but R is false','A is false, but R is true'];
   const WRITTEN = ['short','long','case','application','data','diagram','explain','challenge','teachback'];
   const TYPE_LABEL = { mcq:'Multiple choice', tf:'True / False', assertion:'Assertion–Reason', fill:'Fill in the blank', numerical:'Numerical', short:'Short answer', long:'Long answer', case:'Case-based', application:'Application', data:'Data-based', diagram:'Diagram-based', explain:'Explain', challenge:'Unfamiliar challenge' };
-
+ 
   const SCHEMA = `Return ONLY JSON: {"questions":[Q, ...]}
 Q = {
  "type": "mcq"|"tf"|"assertion"|"fill"|"numerical"|"short"|"long"|"case"|"application"|"data"|"diagram",
@@ -23,13 +23,13 @@ Q = {
  "explanation": "1-3 sentences: why the correct answer is correct"
 }
 Use plain Unicode for maths (×, ÷, ², √, π, →). No LaTeX.`;
-
+ 
   const Quiz = window.Quiz = {
     TYPE_LABEL, WRITTEN, SCHEMA,
     isWritten(q){ return WRITTEN.includes(q.type); },
-
+ 
     conceptList(t){ return (t.concepts || []).map(c => `${c.id}: ${c.name}`).join('\n'); },
-
+ 
     /* spec: {count, stage, difficulty:[], types:[], concepts:[ids], note, related:[topics], source:true} */
     async generate(t, spec, opts = {}){
       const avoid = t.asked.slice(-25).map(s => '- ' + s.slice(0, 120)).join('\n');
@@ -51,9 +51,9 @@ ${rel}
 Every question must test understanding, reasoning or application — not trivia. Do not repeat or lightly reword any of these already-asked questions:
 ${avoid || '- (none yet)'}
 The question text itself must be in the learner's language setting.
-
+ 
 ${SCHEMA}
-
+ 
 VISUAL SPEC (only if a diagram truly helps): ${window.Visuals ? Visuals.SPEC_SHORT : ''}`;
       const data = await AI.json(prompt, { tier: opts.tier || 'default', peek: opts.peek, signal: opts.signal });
       const list = Array.isArray(data) ? data : (data && data.questions) || [];
@@ -62,7 +62,7 @@ VISUAL SPEC (only if a diagram truly helps): ${window.Visuals ? Visuals.SPEC_SHO
       if(!out.length) { const e = new Error('The questions that came back failed the quality check. Try again.'); e.code = 'qc'; throw e; }
       return out;
     },
-
+ 
     /* Quality control for one question. Returns a clean question or null. */
     validate(q, t, batch = []){
       if(!q || typeof q !== 'object' || !q.stem) return null;
@@ -94,6 +94,11 @@ VISUAL SPEC (only if a diagram truly helps): ${window.Visuals ? Visuals.SPEC_SHO
         c.keyPoints = Array.isArray(q.keyPoints) ? q.keyPoints.map(String).slice(0, 6) : [];
         if((type === 'case' || type === 'data') && !q.context) c.type = 'short';
       } else return null;
+      // "options" is only meaningful for mcq/tf/assertion. The AI sometimes echoes a stray
+      // "options": [] on other types, and `c` above spread the raw response — strip it here
+      // so rendering doesn't mistake this for a multiple-choice question (an empty array is
+      // still truthy, so a leftover [] would otherwise hide the real answer input).
+      if(!['mcq','tf','assertion'].includes(c.type)) delete c.options;
       // concept must exist
       const ids = (t.concepts || []).map(x => x.id);
       if(!ids.includes(c.concept)){
@@ -106,7 +111,7 @@ VISUAL SPEC (only if a diagram truly helps): ${window.Visuals ? Visuals.SPEC_SHO
       if(c.visual && !(window.Visuals && Visuals.valid(c.visual))) delete c.visual;
       return c;
     },
-
+ 
     answerText(q){
       if(!q) return '';
       if(['mcq','tf','assertion'].includes(q.type)) return q.options ? q.options[q.answer] : '';
@@ -114,7 +119,7 @@ VISUAL SPEC (only if a diagram truly helps): ${window.Visuals ? Visuals.SPEC_SHO
       if(q.type === 'numerical') return `${q.answer}${q.unit ? ' ' + q.unit : ''}`;
       return q.modelAnswer || (q.keyPoints || []).join('; ');
     },
-
+ 
     /* ---------- rendering ---------- */
     stemHTML(q, { dark=false } = {}){
       const meta = `<div class="q-meta"><span class="tag">${M.esc(TYPE_LABEL[q.type] || q.type)}</span><span class="tag ${q.difficulty === 'hard' || q.difficulty === 'very hard' || q.difficulty === 'unfamiliar' ? 'warn' : ''}">${M.esc(M.cap(q.difficulty))}</span></div>`;
@@ -127,7 +132,7 @@ VISUAL SPEC (only if a diagram truly helps): ${window.Visuals ? Visuals.SPEC_SHO
       const ctx = q.context ? `<div class="q-context prose">${M.md(q.context)}</div>` : '';
       const vis = q.visual && window.Visuals ? `<div class="q-context" style="padding:6px">${Visuals.render(q.visual, { light: !dark })}</div>` : '';
       let body = '';
-      if(q.options){
+      if(Array.isArray(q.options) && q.options.length){
         const chosenIdx = q.options.indexOf(chosen);
         body = `<div class="opts" role="radiogroup">${q.options.map((o,i) => {
           const cls = locked ? (i === q.answer ? 'right' : i === chosenIdx ? 'wrong' : '') : (i === chosenIdx ? 'sel' : '');
@@ -141,13 +146,13 @@ VISUAL SPEC (only if a diagram truly helps): ${window.Visuals ? Visuals.SPEC_SHO
       }
       return `<div class="q" data-qid="${q.id}">${meta}<div class="q-stem">${M.esc(q.stem)}</div>${ctx}${vis}${body}</div>`;
     },
-
+ 
     readAnswer(root, q){
-      if(q.options){ const s = root.querySelector('.opt.sel'); return s ? Number(s.dataset.i) : null; }
+      if(Array.isArray(q.options) && q.options.length){ const s = root.querySelector('.opt.sel'); return s ? Number(s.dataset.i) : null; }
       const el = root.querySelector('[data-ans]'); const v = el ? el.value.trim() : '';
       return v || null;
     },
-
+ 
     lockOptions(root, q, chosen){
       root.querySelectorAll('.opt').forEach(b => {
         const i = Number(b.dataset.i); b.disabled = true;
@@ -155,7 +160,7 @@ VISUAL SPEC (only if a diagram truly helps): ${window.Visuals ? Visuals.SPEC_SHO
       });
       const el = root.querySelector('[data-ans]'); if(el) el.readOnly = true;
     },
-
+ 
     /* ---------- grading ---------- */
     async grade(q, answer, t, opts = {}){
       const res = await this._grade(q, answer, t, opts);
@@ -191,7 +196,7 @@ VISUAL SPEC (only if a diagram truly helps): ${window.Visuals ? Visuals.SPEC_SHO
       }
       return this.gradeWritten(q, answer, t, opts);
     },
-
+ 
     async gradeWritten(q, answer, t, opts = {}){
       if(!AI.ready()) return this.basicGrade(q, answer);
       const level = (t && t.level) || Store.state.profile.level || 'unknown';
@@ -204,7 +209,7 @@ MODEL ANSWER: ${q.modelAnswer || '(none)'}
 KEY POINTS: ${(q.keyPoints || []).join(' | ')}
 ${t && t.source && t.source.text ? 'SOURCE EXCERPT (authority for source-specific facts): ' + t.source.text.slice(0, 5000) : ''}
 LEARNER ANSWER: """${String(answer).slice(0, 4000)}"""
-
+ 
 Evaluate correctness, concept understanding, completeness, reasoning, relevance, key points, terminology and logical structure — adapted to the learner's level.
 Do NOT mark down different wording if the meaning is right. A blank, off-topic or "I don't know" answer scores 0.
 Reply ONLY JSON:
@@ -220,7 +225,7 @@ Reply ONLY JSON:
         const b = this.basicGrade(q, answer); b.note = 'AI grading failed (' + e.message + '). Used the basic keyword check instead.'; return b;
       }
     },
-
+ 
     /* Honest fallback when AI is unavailable: key-point coverage. Clearly labelled as basic. */
     basicGrade(q, answer){
       const a = M.norm(answer); const pts = q.keyPoints && q.keyPoints.length ? q.keyPoints : [q.modelAnswer || ''];
@@ -230,7 +235,7 @@ Reply ONLY JSON:
       const correct = score >= 0.6 && a.split(' ').length >= 5;
       return { correct, score, verdict: correct ? 'correct' : score >= 0.3 ? 'partial' : 'incorrect', graded:'basic', feedback:'', strengths: hit, missing: miss, misconceptions: [], errorType: correct ? null : 'incomplete answer', note:'Basic keyword check. The AI grader is off, so this only checks whether the key ideas are mentioned.' };
     },
-
+ 
     feedbackHTML(q, r, { selfTag=true } = {}){
       const cls = r.correct ? 'ok' : r.verdict === 'partial' ? 'partial' : 'bad';
       const head = r.correct ? 'Correct' : r.verdict === 'partial' ? 'Partly there' : 'Not yet';
@@ -248,7 +253,7 @@ Reply ONLY JSON:
       </div>`;
     },
   };
-
+ 
   M.action('q-opt', (el) => {
     const box = el.closest('.opts'); if(!box) return;
     box.querySelectorAll('.opt').forEach(b => { b.classList.remove('sel'); b.setAttribute('aria-checked','false'); });
@@ -262,3 +267,5 @@ Reply ONLY JSON:
     M.toast('Noted as ' + type + '. It stays in your Mistake Bank.');
   });
 })();
+ 
+
