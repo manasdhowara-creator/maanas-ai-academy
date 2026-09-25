@@ -12,15 +12,15 @@
   const wrap = (t, cx, cy, max, p, size) => M.wrapText(t, cx, cy, Math.max(6, Math.round(max / 1.15)), p.fg, Math.round(size * 1.2)).replace('<text ', `<text font-family="${p.font}" `);
   const trunc = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
   const nums = a => a.map(Number).filter(isFinite);
-
+ 
   const R = {
     keypoint(v, p){ return `${wrap(v.text || v.title || '', W/2, H/2 - 20, 30, p, 40)}${v.sub ? `<g ${rv(1)}>${wrap(v.sub, W/2, H/2 + 90, 48, {...p, fg:p.dim}, 24)}</g>` : ''}`; },
-
+ 
     equation(v, p){
       const steps = (v.steps || []).slice(0, 7); const lh = Math.min(64, (H - 60) / Math.max(1, steps.length));
       return steps.map((s, i) => `<g ${rv(i, .7)}>${T(W/2, 40 + lh * (i + .5), trunc(s, 44), { ...p, color: i === (v.highlight ?? steps.length - 1) ? p.y : p.fg }, Math.min(40, lh * .62))}</g>`).join('');
     },
-
+ 
     forces(v, p){
       const cx = W/2, cy = H/2 + 10, bw = 150, bh = 110;
       let s = arrowDefs(p) + `<rect x="${cx-bw/2}" y="${cy-bh/2}" width="${bw}" height="${bh}" rx="10" fill="${p.box}" stroke="${p.fg}" stroke-width="3"/>` + T(cx, cy, trunc(v.object || 'Object', 12), p, 26);
@@ -43,7 +43,7 @@
       if(netText) s += `<g ${rv(fs.length + 2, .6)}>${T(W/2, 40, trunc(netText, 50), { ...p, color: p.y }, 28)}</g>`;
       return s;
     },
-
+ 
     graph(v, p){
       const pts = (v.points || []).filter(q => Array.isArray(q) && q.length >= 2).map(q => [Number(q[0]), Number(q[1])]).filter(q => isFinite(q[0]) && isFinite(q[1])).slice(0, 40);
       if(pts.length < 2) return R.keypoint({ text: v.title || 'Graph' }, p);
@@ -60,7 +60,7 @@
       if(v.title) s += T(W/2, 22, trunc(v.title, 50), { ...p, color: p.b }, 22);
       return s;
     },
-
+ 
     bars(v, p){
       const items = (v.items || []).slice(0, 8).map(it => ({ label: it.label, value: Number(it.value) })).filter(it => isFinite(it.value));
       if(!items.length) return R.keypoint({ text: v.title || 'Data' }, p);
@@ -68,7 +68,7 @@
       return items.map((it, i) => { const h = (it.value / max) * (H - 150), x = 70 + i * bw + bw * .15, y = H - 70 - h; const col = [p.y, p.b, p.g, p.r][i % 4];
         return `<g ${rv(i, .3)}><rect x="${x}" y="${y}" width="${bw * .7}" height="${h}" rx="6" fill="${col}" opacity=".85"/>${T(x + bw*.35, y - 16, fmt(it.value) + (v.unit ? ' ' + v.unit : ''), p, 18)}${T(x + bw*.35, H - 45, trunc(it.label, 12), { ...p, color: p.dim }, 17)}</g>`; }).join('') + `<line x1="60" y1="${H-70}" x2="${W-40}" y2="${H-70}" stroke="${p.fg}" stroke-width="2"/>` + (v.title ? T(W/2, 26, trunc(v.title, 50), { ...p, color: p.b }, 22) : '');
     },
-
+ 
     labelled(v, p){
       const parts = (v.parts || []).slice(0, 8); const cx = W/2, cy = H/2;
       let s = `<ellipse cx="${cx}" cy="${cy}" rx="150" ry="105" fill="${p.box}" stroke="${p.g}" stroke-width="3"/><ellipse cx="${cx+20}" cy="${cy-10}" rx="45" ry="32" fill="none" stroke="${p.g}" stroke-width="2" opacity=".6"/>` + T(cx, cy, trunc(v.center || '', 16), p, 28);
@@ -80,7 +80,7 @@
       });
       return s;
     },
-
+ 
     process(v, p){
       const steps = (v.steps || []).slice(0, 7).map(x => typeof x === 'string' ? x : (x.label || x.name || ''));
       let s = arrowDefs(p);
@@ -109,7 +109,7 @@
       });
       return s;
     },
-
+ 
     timeline(v, p){
       const ev = (v.events || []).slice(0, 7); const y = H/2; const x0 = 60, x1 = W - 60;
       let s = `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="${p.fg}" stroke-width="4"/>`;
@@ -117,7 +117,7 @@
         s += `<g ${rv(i, .55)}><circle cx="${x}" cy="${y}" r="10" fill="${p.y}"/><line x1="${x}" y1="${y}" x2="${x}" y2="${up ? y - 60 : y + 60}" stroke="${p.y}" stroke-width="2"/>${T(x, up ? y - 82 : y + 82, trunc(it.when || it.year || '', 14), { ...p, color: p.y }, 22)}${wrap(it.label || '', x, up ? y - 140 : y + 140, 16, p, 17)}</g>`; });
       return s;
     },
-
+ 
     particles(v, p){
       const st = String(v.state || 'solid').toLowerCase(); let s = `<rect x="200" y="70" width="400" height="340" rx="10" fill="none" stroke="${p.fg}" stroke-width="3"/>`;
       const pts = [];
@@ -128,7 +128,7 @@
       s += T(W/2, 40, trunc(v.label || (st[0].toUpperCase() + st.slice(1) + ': particle arrangement'), 44), { ...p, color: p.y }, 26);
       return s;
     },
-
+ 
     reaction(v, p){
       const re = (v.reactants || []).slice(0, 3), pr = (v.products || []).slice(0, 3);
       const all = [...re, '→', ...pr]; const bw = 118; const total = all.length; const gap = (W - 40) / total;
@@ -141,7 +141,7 @@
       if(v.equation) s += `<g ${rv(total, .5)}>${T(W/2, H - 60, trunc(v.equation, 44), { ...p, color: p.y }, 28)}</g>`;
       return s;
     },
-
+ 
     code(v, p){
       const lines = String(v.code || '').split('\n').slice(0, 14);
       let s = `<rect x="40" y="30" width="${W-80}" height="${v.output ? 320 : 440}" rx="12" fill="#0E141B" stroke="${p.line}"/><circle cx="66" cy="52" r="6" fill="#FF6B5F"/><circle cx="86" cy="52" r="6" fill="#FFBD2E"/><circle cx="106" cy="52" r="6" fill="#28C840"/>${T(W - 60, 52, (v.language || 'code').toUpperCase(), { color:'#8394A5', font:'var(--f-mono)' }, 14, 'end')}`;
@@ -149,7 +149,7 @@
       if(v.output) s += `<g ${rv(lines.length + 1, .25)}><rect x="40" y="365" width="${W-80}" height="105" rx="12" fill="#0B1016" stroke="${p.g}"/>${T(60, 388, 'OUTPUT', { color: '#7FE0A2', font:'var(--f-mono)' }, 13, 'start')}${String(v.output).split('\n').slice(0,3).map((o, i) => `<text x="60" y="${414 + i * 20}" fill="#7FE0A2" font-family="var(--f-mono)" font-size="15" xml:space="preserve">${e(trunc(o, 76))}</text>`).join('')}</g>`;
       return s;
     },
-
+ 
     architecture(v, p){
       const layers = (v.layers || []).slice(0, 5); const n = layers.length || 1; const lh = Math.min(84, (H - 40 - (n - 1) * 22) / n);
       let s = arrowDefs(p);
@@ -160,13 +160,13 @@
         s += '</g>'; });
       return s;
     },
-
+ 
     compare(v, p){
       const L = v.left || {}, Rr = v.right || {};
-      const col = (side, x, c, i0) => `<g ${rv(i0, .5)}><rect x="${x}" y="30" width="${W/2 - 50}" height="${H - 60}" rx="14" fill="${p.box}" stroke="${c}" stroke-width="2.5"/>${T(x + (W/2 - 50)/2, 66, trunc(side.title || '', 20), { ...p, color: c }, 26)}${(side.points || []).slice(0, 5).map((pt, i) => wrap('• ' + pt, x + (W/2 - 50)/2, 130 + i * 68, 26, p, 18)).join('')}</g>`;
+      const col = (side, x, c, i0) => `<g ${rv(i0, .15)}><rect x="${x}" y="30" width="${W/2 - 50}" height="${H - 60}" rx="14" fill="${p.box}" stroke="${c}" stroke-width="2.5"/>${T(x + (W/2 - 50)/2, 66, trunc(side.title || '', 20), { ...p, color: c }, 26)}${(side.points || []).slice(0, 5).map((pt, i) => `<g class="rv" style="animation-delay:${(0.3 + i * 0.08).toFixed(2)}s">${wrap('• ' + pt, x + (W/2 - 50)/2, 130 + i * 68, 26, p, 18)}</g>`).join('')}</g>`;
       return col(L, 30, p.b, 0) + col(Rr, W/2 + 20, p.y, 1);
     },
-
+ 
     geometry(v, p){
       const sh = String(v.shape || 'triangle').toLowerCase(); const cx = W/2, cy = H/2 + 10;
       const shapes = {
@@ -186,7 +186,7 @@
       if(v.note) s += T(W/2, 24, trunc(v.note, 50), { ...p, color: p.b }, 21);
       return s;
     },
-
+ 
     numberline(v, p){
       const min = Number(v.min ?? -5), max = Number(v.max ?? 5); if(!(max > min)) return R.keypoint({ text:'Number line' }, p);
       const x0 = 60, x1 = W - 60, y = H/2, X = n => x0 + (n - min) / (max - min) * (x1 - x0);
@@ -199,9 +199,9 @@
     },
   };
   function fmt(n){ return Math.abs(n) >= 1000 ? Math.round(n).toLocaleString() : String(Math.round(n * 100) / 100); }
-
+ 
   const REQUIRED = { keypoint:['text'], equation:['steps'], forces:['forces'], graph:['points'], bars:['items'], labelled:['parts'], process:['steps'], timeline:['events'], particles:[], reaction:['reactants','products'], code:['code'], architecture:['layers'], compare:['left','right'], geometry:['shape'], numberline:[] };
-
+ 
   const Visuals = window.Visuals = {
     _n: 0,
     SPEC_SHORT: `one of: {"type":"equation","steps":["2x+3=11","2x=8","x=4"]} | {"type":"forces","object":"Box","unit":"N","forces":[{"dir":"right|left|up|down","label":"Push","size":10}]} | {"type":"graph","title":"","xLabel":"time (s)","yLabel":"distance (m)","points":[[0,0],[1,2]]} | {"type":"bars","title":"","unit":"","items":[{"label":"","value":3}]} | {"type":"labelled","center":"Plant cell","parts":[{"name":"Nucleus","note":"controls the cell"}]} | {"type":"process","cycle":false,"steps":["…","…"]} | {"type":"timeline","events":[{"when":"1857","label":"…"}]} | {"type":"particles","state":"solid|liquid|gas","label":""} | {"type":"reaction","reactants":["CH₄","2O₂"],"products":["CO₂","2H₂O"],"condition":"burning","equation":"CH₄ + 2O₂ → CO₂ + 2H₂O"} | {"type":"code","language":"python","code":"print(2+3)","output":"5"} | {"type":"architecture","layers":[{"name":"Input","items":["tokens"]}]} | {"type":"compare","left":{"title":"","points":[]},"right":{"title":"","points":[]}} | {"type":"geometry","shape":"triangle|square|rectangle|parallelogram|rhombus|trapezium|circle","labels":{"vertices":["A","B","C"],"sides":["5 cm"],"angles":["60°"]},"note":""} | {"type":"numberline","min":-5,"max":5,"marks":[{"value":-2,"label":"-2"}]} | {"type":"keypoint","text":"big idea","sub":"detail"}`,
@@ -221,19 +221,19 @@
       return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${e((v && v.type) || 'diagram')} diagram" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;display:block">${inner}</svg>`;
     },
   };
-
+ 
   /* animation styles for visuals */
   const st = document.createElement('style');
-  st.textContent = `.rv{opacity:0;animation:rvIn .5s ease forwards}@keyframes rvIn{to{opacity:1}}
+  st.textContent = `.rv{opacity:.4;animation:rvIn .4s ease forwards}@keyframes rvIn{to{opacity:1}}
   .draw{stroke-dasharray:2400;stroke-dashoffset:2400;animation:drawIn 1.6s ease forwards}@keyframes drawIn{to{stroke-dashoffset:0}}
   .jig{animation:jig 1.2s ease-in-out infinite alternate}.jig.solid{animation-duration:.35s}.jig.liquid{animation:flow 2.2s ease-in-out infinite alternate}.jig.gas{animation:fly 3s linear infinite alternate}
   @keyframes jig{from{transform:translate(0,0)}to{transform:translate(2px,-2px)}}@keyframes flow{from{transform:translate(0,0)}to{transform:translate(14px,-8px)}}@keyframes fly{from{transform:translate(0,0)}to{transform:translate(90px,-60px)}}
   .jig{transform-box:fill-box}`;
   document.head.appendChild(st);
-
+ 
   /* ================= Teacher Lesson (scenes) ================= */
   const TEACHER = { name:'Ms. Vidya', initial:'V', sub:'Your AI teacher · narrated board lesson' };
-
+ 
   const Video = window.Video = {
     TEACHER,
     async generate(t, opts = {}){
@@ -247,13 +247,13 @@ CONCEPTS: ${t.concepts.map(c => c.id + ': ' + c.name).join('; ')}
 LESSON OUTLINE:
 ${lessonOutline}
 ${src}
-
+ 
 Plan 8-12 ordered scenes that TEACH the full topic Basic → Foundation → Intermediate → Advanced → Mastery. Do not cut important content; cut only filler.
 Each scene: natural spoken narration (60-110 words, as a teacher talks: questions, pauses like "Think for a second…", real examples), one board visual that MATCHES THE SUBJECT, and 1-3 short board notes.
 Preferred visuals for this subject: ${Visuals.SUBJECT_HINT[kind] || Visuals.SUBJECT_HINT.general}. Use real, accurate numbers and labels.
 Include: a hook scene, worked example(s), a common-mistake scene, a recap scene, and a final teach-back prompt scene.
 Put a checkpoint question on 2-3 scenes (quick recall, prediction, MCQ or calculation) — mcq/tf/numerical/fill only.
-
+ 
 Reply ONLY JSON:
 {"scenes":[{"title":"short","level":"Basic|Foundation|Intermediate|Advanced|Mastery","narration":"…","board":["short note"],"visual":VISUAL,"checkpoint":null or Q}]}
 VISUAL = ${Visuals.SPEC_SHORT}
@@ -274,7 +274,7 @@ Q (checkpoint) follows: ${Quiz.SCHEMA.split('\n').slice(1, 16).join(' ')}`;
     script(t, scenes){
       return `${t.title} — lesson script (${scenes.length} scenes). Presenter: ${TEACHER.name}.\n\n` + scenes.map((s, i) => `SCENE ${i + 1}: ${s.title} [${s.level}]\nON SCREEN: ${describeVisual(s.visual)}${s.board.length ? ' | Notes: ' + s.board.join(' · ') : ''}\nSAY: ${s.narration}\n`).join('\n');
     },
-
+ 
     /* The player. host: element. handlers: {onCheckpoint(q, result), onFinish()} */
     mount(host, t, scenes, handlers = {}){
       const synth = window.speechSynthesis;
@@ -296,7 +296,7 @@ Q (checkpoint) follows: ${Quiz.SCHEMA.split('\n').slice(1, 16).join(' ')}`;
         ${!synth ? '<div class="hint" style="margin-top:6px">This browser has no built-in voice, so captions play without sound.</div>' : ''}`;
       const $ = id => host.querySelector('#' + id);
       const voice = pickVoice();
-
+ 
       function show(i, autoplay){
         stopSpeech(); S.i = M.clamp(i, 0, scenes.length - 1); S.awaiting = false;
         const sc = scenes[S.i];
@@ -348,7 +348,7 @@ Q (checkpoint) follows: ${Quiz.SCHEMA.split('\n').slice(1, 16).join(' ')}`;
           handlers.onCheckpoint && handlers.onCheckpoint(q, r);
         });
       }
-
+ 
       $('pcPlay').onclick = () => {
         if(S.awaiting) return;
         if(S.playing){ setPlaying(false); stopSpeech(); caption(scenes[S.i].narration, 0); }
@@ -379,3 +379,5 @@ Q (checkpoint) follows: ${Quiz.SCHEMA.split('\n').slice(1, 16).join(' ')}`;
   }
   M.on('route', () => { if(Video._stop) Video._stop(); });
 })();
+ 
+
