@@ -5,13 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Maanas AI Academy</title>
 <meta name="description" content="Learn it. Prove it. Master it. A personal AI teacher and mastery engine.">
-<meta name="theme-color" content="#2E3FD6">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#2E3FD6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0C1117" media="(prefers-color-scheme: dark)">
+<meta name="robots" content="index, follow">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Maanas AI Academy">
+<meta property="og:title" content="Maanas AI Academy — Learn it. Prove it. Master it.">
+<meta property="og:description" content="A personal AI teacher and mastery engine: lessons, spaced revision, tests and a coding lab.">
+<meta property="og:image" content="https://maanas-ai-academy-app.onrender.com/icon-512.png">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,650;12..96,750&family=JetBrains+Mono:wght@400;600&family=Kalam:wght@400;700&display=swap">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to content</a>
 
 <div id="app" class="app">
   <aside class="sidebar" id="sidebar" aria-label="Main navigation">
@@ -33,7 +46,9 @@
         <span class="ai-pill" id="aiPill" title="AI teacher status">AI: checking…</span>
       </div>
     </header>
-    <div id="view" class="view" aria-live="polite"></div>
+    <div id="view" class="view" aria-live="polite">
+      <noscript><div class="stack"><h1>Maanas AI Academy</h1><p>This study app needs JavaScript. Please turn it on in your browser settings and reload the page.</p></div></noscript>
+    </div>
   </main>
 
   <nav class="tabbar" id="tabbar" aria-label="Quick navigation"></nav>
@@ -54,6 +69,7 @@
 <script src="js/pack.js"></script>
 <script src="js/source.js"></script>
 <script src="js/video.js"></script>
+<script src="js/email.js"></script>
 <script src="js/lesson.js"></script>
 <script src="js/coach.js"></script>
 <script src="js/research.js"></script>

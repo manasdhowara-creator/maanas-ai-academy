@@ -173,7 +173,7 @@ Q format: ${Quiz.SCHEMA}`;
     let qs;
     if(t.builtin && !AI.ready()){
       qs = Pack.questions(t, stage, specFor(t, stage).count);
-      if(!qs.length) throw Object.assign(new Error('You’ve used all the built-in questions for this step. Fresh questions need the AI teacher. Open this page inside Claude to switch it on.'), { code:'exhausted' });
+      if(!qs.length) throw Object.assign(new Error('You’ve used all the built-in questions for this step. Fresh questions need the AI teacher, which isn’t available right now. Try again in a minute.'), { code:'exhausted' });
     } else {
       qs = await Quiz.generate(t, specFor(t, stage), { peek });
     }
@@ -234,7 +234,7 @@ Q format: ${Quiz.SCHEMA}`;
       if(!t.builtin) throw Object.assign(new Error(AI.friendly('offline')), { code:'offline' });
       const pk = Pack[t.builtin]; const sec = pk.sections.find(s => s.checkpoint && s.checkpoint.concept === f.concept) || pk.sections[0];
       const q = Pack.fixQuestion(t, f.concept);
-      if(!q) throw Object.assign(new Error('No fresh built-in question is left for this concept. The AI teacher can make new ones. Open this page inside Claude.'), { code:'exhausted' });
+      if(!q) throw Object.assign(new Error('No fresh built-in question is left for this concept. The AI teacher can make new ones, but it isn’t available right now. Try again in a minute.'), { code:'exhausted' });
       t.fixRun = { concept: f.concept, method: 'built-in explanation', diagnosis: `You missed a question on “${cname}”. Here is that idea again.`, reteach: sec.body + '\n\n**Example:** ' + sec.example, visual: null, question: q, phase:'teach' };
       Store.saveTopic(t); return;
     }

@@ -144,6 +144,10 @@
     importJSON(text){
       const s = JSON.parse(text);
       if(!s || typeof s !== 'object' || !s.profile) throw new Error('This does not look like an academy backup.');
+      // Reject malformed backups up front, so a bad file can't leave the app half-broken.
+      const isMap = v => v && typeof v === 'object' && !Array.isArray(v);
+      if(s.topics !== undefined && !isMap(s.topics)) throw new Error('This backup file is damaged (lessons are unreadable).');
+      ['mistakes','notes','research','formulas','library','exams','deleted'].forEach(k => { if(s[k] !== undefined && !Array.isArray(s[k])) throw new Error('This backup file is damaged (' + k + ' is unreadable).'); });
       this.state = Object.assign(blank(), s);
       const now = Date.now();
       ['profile','mistakes','notes','research','formulas'].forEach(k => this.state.meta[k] = now);

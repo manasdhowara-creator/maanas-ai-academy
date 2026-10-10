@@ -46,6 +46,8 @@
         bad_recipient: 'Your saved email address looks invalid. Fix it in Settings.',
         missing_fields: 'Nothing to send yet.',
         send_failed: 'The email could not be sent. Try again in a bit.',
+        rate_limited: 'You’ve sent several emails recently. Please wait a while before sending more.',
+        prompt_too_large: 'This email is too large to send. Try a smaller set of notes.',
       };
       throw new Error(msgs[payload.error] || 'The email could not be sent.');
     }

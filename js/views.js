@@ -13,6 +13,9 @@
   /* ---------- navigation ---------- */
   V.nav = () => {
     const cur = M.current.name === 'home' ? (Store.topicsList().length ? 'dashboard' : 'learn') : M.current.name === 'topic' ? 'lessons' : M.current.name;
+    const navItem = NAV.flatMap(g => g.items).find(i => i[0] === M.current.name);
+    const screenName = navItem ? navItem[1] : (M.current.name === 'topic' ? 'Lesson' : '');
+    document.title = (screenName ? screenName + ' · ' : '') + 'Maanas AI Academy';   // meaningful tab / history / screen-reader title per screen
     const due = Revision.due().length, mis = Store.state.mistakes.filter(m => !m.resolved).length;
     const badge = id => id === 'revise' && due ? `<span class="count">${due}</span>` : id === 'mistakes' && mis ? `<span class="count" style="background:var(--muted)">${mis}</span>` : '';
     document.getElementById('sideNav').innerHTML = NAV.map(g => (g.g ? `<div class="side-group">${g.g}</div>` : '<div style="height:10px"></div>') + g.items.map(([id, label, ic]) => `<a class="side-link ${cur === id ? 'active' : ''}" href="#${id}" ${cur === id ? 'aria-current="page"' : ''}>${M.icon[ic]}<span>${label}</span>${badge(id)}</a>`).join('')).join('');
@@ -421,12 +424,12 @@
         <button class="btn primary" data-action="save-settings" style="align-self:flex-start">Save</button></div>
       <div class="card stack-sm"><h3>Teacher voice</h3>${voices.length ? `<select class="select" id="sVoice"><option value="">Automatic</option>${voices.map(v => `<option value="${M.esc(v.voiceURI)}" ${p.voiceURI === v.voiceURI ? 'selected' : ''}>${M.esc(v.name)} (${M.esc(v.lang)})</option>`).join('')}</select><button class="btn sm" data-action="test-voice" style="align-self:flex-start">${M.icon.volume} Test voice</button>` : '<p class="small muted">Your browser hasn’t provided voices yet (or has none). Lessons still play with captions.</p>'}</div>
       <div class="card stack-sm"><h3>Appearance</h3><div class="chips">${['system','light','dark'].map(t => `<button class="chip ${theme === t ? 'on' : ''}" data-action="set-theme" data-t="${t}">${M.cap(t)}</button>`).join('')}</div></div>
-      <div class="card stack-sm"><h3>AI teacher</h3><p class="small">${AI.status === 'on' ? '✓ On. It runs on your own Claude plan through this page. There’s no extra subscription, API key or paid service.' : M.esc(AI.friendly(AI.status === 'denied' ? 'not_granted' : 'offline'))}</p><p class="small muted">Works without AI: the built-in lesson, Coding Lab (tests + security review), spaced revision schedule, Mistake Bank, notes, PDF reading, and exams on the built-in lesson.</p></div>
-      <div class="card stack-sm"><h3>Your data</h3><p class="small">${Store.sync === 'account' ? '✓ Saved privately to your account, so it follows you across devices. Also cached on this device.' : 'Saved on this device only (account sync isn’t available in this view).'}</p>
-        <div class="row"><button class="btn sm" data-action="export-data">${M.icon.copy} Copy backup</button><button class="btn sm" data-action="import-toggle">Restore from backup</button><button class="btn danger sm" data-action="reset-data">Erase all data</button></div>
+      <div class="card stack-sm"><h3>AI teacher</h3><p class="small">${AI.status === 'on' ? '✓ On. Your AI teacher runs on free-tier AI models (Google Gemini, with Groq as a backup) through this academy’s server. There’s nothing for you to pay for or set up.' : M.esc(AI.friendly(AI.status === 'denied' ? 'not_granted' : 'offline'))}</p><p class="small muted">Works without AI: the built-in lesson, Coding Lab (tests + security review), spaced revision schedule, Mistake Bank, notes, PDF reading, and exams on the built-in lesson.</p></div>
+      <div class="card stack-sm"><h3>Your data</h3><p class="small">${Store.sync === 'account' ? '✓ Saved privately to your account, so it follows you across devices. Also cached on this device.' : 'Your progress is saved in this browser, on this device only. Clearing browser data, switching device or using a private window will erase it, so download a backup now and then.' + (() => { let t = 0; try { t = +localStorage.getItem('maa.lastBackup') || 0; } catch(_){} return t ? ' Last backup: ' + M.fmtDate(t) + '.' : ' You haven’t downloaded a backup yet.'; })()}</p>
+        <div class="row"><button class="btn sm primary" data-action="download-backup">Download backup file</button><button class="btn sm" data-action="pick-backup">Restore from file</button><input type="file" id="importFile" accept="application/json,.json" hidden aria-label="Choose a backup file"><button class="btn sm" data-action="export-data">${M.icon.copy} Copy backup</button><button class="btn sm" data-action="import-toggle">Paste backup</button><button class="btn danger sm" data-action="reset-data">Erase all data</button></div>
         <div id="importBox" hidden class="stack-sm"><textarea class="textarea" id="importText" rows="4" placeholder="Paste a backup here"></textarea><button class="btn sm primary" data-action="import-data" style="align-self:flex-start">Restore</button></div></div>
       <details class="fold"><summary>What’s real in this academy</summary><div class="small stack-sm">
-        <p><b>AI lessons, questions, grading, coach, research analysis:</b> real Claude responses, generated live for you.</p>
+        <p><b>AI lessons, questions, grading, coach, research analysis:</b> real AI-model responses, generated live for you. AI can make mistakes, so check important facts against your textbook.</p>
         <p><b>Teacher lesson:</b> an animated, narrated chalkboard lesson. The voice is your browser’s built-in speech. It is not filmed video, and there’s no human presenter. You can copy the script into HeyGen if you want one (paid, optional).</p>
         <p><b>Mastery:</b> earned only through seven kinds of proven answers, never through clicks or watching.</p>
         <p><b>Research:</b> the lab can’t browse the web. It plans searches, and verifies quotes word-for-word against sources you add.</p>
@@ -443,6 +446,30 @@
   M.action('set-theme', el => { const t = el.dataset.t; try { localStorage.setItem('maa.theme', t); } catch(_){} V.applyTheme(); M.render(); });
   V.applyTheme = () => { let t = 'system'; try { t = localStorage.getItem('maa.theme') || 'system'; } catch(_){} if(t === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t); };
   M.action('export-data', () => M.copy(Store.exportJSON()));
+  M.action('download-backup', () => {
+    try {
+      const blob = new Blob([Store.exportJSON()], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'maanas-ai-academy-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+      try { localStorage.setItem('maa.lastBackup', String(Date.now())); } catch(_){}
+      M.toast('Backup downloaded. Keep the file somewhere safe.');
+      if(M.current.name === 'settings') M.render();
+    } catch(e){ M.toast('Could not create the backup file. Try “Copy backup” instead.'); }
+  });
+  M.action('pick-backup', () => { const f = document.getElementById('importFile'); if(f) f.click(); });
+  document.addEventListener('change', (e) => {
+    if(!e.target || e.target.id !== 'importFile' || !e.target.files || !e.target.files[0]) return;
+    const file = e.target.files[0];
+    if(file.size > 60 * 1024 * 1024){ M.toast('That file is too large to be an academy backup.'); e.target.value = ''; return; }
+    const reader = new FileReader();
+    reader.onload = () => { try { Store.importJSON(String(reader.result)); M.toast('Backup restored'); M.go('dashboard'); } catch(err){ M.toast(err.message || 'That backup could not be read.'); } };
+    reader.onerror = () => M.toast('That file could not be read.');
+    reader.readAsText(file);
+    e.target.value = '';
+  });
   M.action('import-toggle', () => { const b = document.getElementById('importBox'); b.hidden = !b.hidden; });
   M.action('import-data', () => { try { Store.importJSON(document.getElementById('importText').value); M.toast('Backup restored'); M.go('dashboard'); } catch(e){ M.toast(e.message || 'That backup could not be read.'); } });
   M.action('reset-data', el => {

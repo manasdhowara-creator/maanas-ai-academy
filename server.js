@@ -9,11 +9,88 @@
    one that's busy, retired, or gives a broken answer. The list is re-fetched once an
    hour, so as Google's lineup changes over time, this keeps working with no code edits. */
 const express = require('express');
+const compression = require('compression');
 const path = require('path');
 
 const app = express();
-app.use(express.json({ limit: '20mb' }));
-app.use(express.static(__dirname));
+app.disable('x-powered-by');
+app.set('trust proxy', 1); // Render sits behind a proxy: needed so req.ip is the real visitor, not the proxy
+app.use(compression());
+
+/* ---------- Security headers ----------
+   Deliberately NOT a strict script-src: the Coding Lab runs learner code in a sandboxed
+   srcdoc iframe (which inherits the page's CSP), so a strict script policy would break it.
+   These directives are the ones that add safety without breaking any feature. */
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+  res.setHeader('Content-Security-Policy', "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'");
+  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+  next();
+});
+
+/* ---------- Tiny in-memory rate limiter (no extra dependency) ----------
+   /api/ai spends YOUR free-tier AI quota and /api/email sends mail from YOUR account, and
+   neither requires a login, so without a limit anyone could drain or abuse them. Limits are
+   per visitor IP and tunable with environment variables. Counters reset if the server restarts. */
+function rateLimit({ windowMs, max }) {
+  const hits = new Map();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of hits) if (v.reset <= now) hits.delete(k);
+  }, 60 * 1000).unref();
+  return (req, res, next) => {
+    const now = Date.now();
+    let e = hits.get(req.ip);
+    if (!e || e.reset <= now) { e = { n: 0, reset: now + windowMs }; hits.set(req.ip, e); }
+    e.n++;
+    if (e.n > max) {
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil((e.reset - now) / 1000))));
+      return res.status(429).json({ error: 'rate_limited' });
+    }
+    next();
+  };
+}
+const aiLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: parseInt(process.env.AI_RATE_MAX, 10) || 200,   // generous: a classroom may share one school IP
+});
+const emailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: parseInt(process.env.EMAIL_RATE_MAX, 10) || 8,
+});
+
+// Body parsers: a big limit ONLY where it is needed (AI requests carry source text + images).
+app.use('/api/ai', express.json({ limit: '16mb' }));
+app.use(express.json({ limit: '1mb' }));
+
+/* ---------- Static files: an explicit allow-list ----------
+   The old setup served the whole project folder, which made server.js, package.json and an
+   old zip of the source publicly downloadable. Now only the files the app needs are served. */
+const ROOT = __dirname;
+const PUBLIC_FILES = {
+  '/': 'index.html',
+  '/index.html': 'index.html',
+  '/styles.css': 'styles.css',
+  '/manifest.webmanifest': 'manifest.webmanifest',
+  '/favicon.svg': 'favicon.svg',
+  '/icon-192.png': 'icon-192.png',
+  '/icon-512.png': 'icon-512.png',
+  '/robots.txt': 'robots.txt',
+  '/sw.js': 'sw.js',
+};
+Object.entries(PUBLIC_FILES).forEach(([urlPath, file]) => {
+  app.get(urlPath, (req, res, next) => {
+    res.sendFile(path.join(ROOT, file), {
+      headers: urlPath === '/sw.js' || file === 'index.html'
+        ? { 'Cache-Control': 'no-cache', ...(urlPath === '/sw.js' ? { 'Service-Worker-Allowed': '/' } : {}) }
+        : { 'Cache-Control': 'public, max-age=0, must-revalidate' },
+    }, err => { if (err) next(err.code === 'ENOENT' ? undefined : err); });
+  });
+});
+app.use('/js', express.static(path.join(ROOT, 'js'), { index: false, dotfiles: 'ignore', maxAge: 0, setHeaders: res => res.setHeader('Cache-Control', 'public, max-age=0, must-revalidate') }));
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
@@ -71,20 +148,27 @@ async function getModels() {
 }
 
 app.get('/api/health', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
   res.json({ ok: !!(GEMINI_API_KEY || GROQ_API_KEY), email: !!RESEND_API_KEY });
 });
+
+// Lightweight liveness check (no AI involved) — point Render's health check / an uptime monitor here.
+app.get('/healthz', (req, res) => { res.setHeader('Cache-Control', 'no-store'); res.type('text/plain').send('ok'); });
 
 /* Sends Master Notes / Formula Sheet emails via Resend. The recipient is
    always the learner's OWN registered email (sent by the frontend from
    their saved profile — never typed in by hand here), so each learner
    only ever receives their own notes. Returns success ONLY after Resend
    actually confirms the send — never a fake "sent" response. */
-app.post('/api/email', async (req, res) => {
+app.post('/api/email', emailLimiter, async (req, res) => {
   try {
     if (!RESEND_API_KEY) return res.status(503).json({ error: 'email_not_configured' });
     const { to, subject, html, text } = req.body || {};
-    if (!to || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return res.status(400).json({ error: 'bad_recipient' });
+    if (typeof to !== 'string' || to.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return res.status(400).json({ error: 'bad_recipient' });
     if (!subject || !(html || text)) return res.status(400).json({ error: 'missing_fields' });
+    if ((html && (typeof html !== 'string' || html.length > 300000)) || (text && (typeof text !== 'string' || text.length > 100000))) {
+      return res.status(413).json({ error: 'prompt_too_large' });
+    }
 
     const upstream = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -184,19 +268,30 @@ async function callModel(model, body) {
   }
 }
 
-app.post('/api/ai', async (req, res) => {
+const MAX_PROMPT_CHARS = 400000;   // roughly a long book chapter
+const MAX_IMAGES = 4;
+const IMAGE_MIME = /^image\/(png|jpe?g|webp|gif|heic|heif)$/i;
+
+app.post('/api/ai', aiLimiter, async (req, res) => {
   try {
     if (!GEMINI_API_KEY && !GROQ_API_KEY) return res.status(503).json({ error: 'no_api_key' });
 
     const { input, json, images } = req.body || {};
     if (!input) return res.status(400).json({ error: 'missing_input' });
 
+    const promptChars = typeof input === 'string' ? input.length
+      : Array.isArray(input) ? input.reduce((n, t) => n + String((t && t.content) || '').length, 0) : 0;
+    if (promptChars > MAX_PROMPT_CHARS) return res.status(413).json({ error: 'prompt_too_large' });
+
     let contents;
     if (typeof input === 'string') {
       const parts = [{ text: input }];
       if (Array.isArray(images)) {
-        images.forEach(img => {
-          if (img && img.data) parts.push({ inline_data: { mime_type: img.mime || 'image/jpeg', data: img.data } });
+        images.slice(0, MAX_IMAGES).forEach(img => {
+          if (img && typeof img.data === 'string' && img.data) {
+            const mime = IMAGE_MIME.test(img.mime || '') ? img.mime : 'image/jpeg';
+            parts.push({ inline_data: { mime_type: mime, data: img.data } });
+          }
         });
       }
       contents = [{ role: 'user', parts }];
@@ -296,8 +391,37 @@ app.post('/api/ai', async (req, res) => {
   }
 });
 
-// SPA fallback for hash-routed pages
-app.get('*', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+// Unknown API paths get a real 404 (not the app's HTML page pretending to be a 200).
+app.use('/api', (req, res) => res.status(404).json({ error: 'not_found' }));
+
+// SPA fallback: only for page-style URLs. A missing file (anything with an extension) is a real 404,
+// so a broken script link shows up as an error instead of the app's HTML being parsed as JavaScript.
+app.get('*', (req, res) => {
+  if (path.extname(req.path) || /(^|\/)\./.test(req.path)) return res.status(404).type('text/plain').send('Not found');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(ROOT, 'index.html'));
+});
+
+// Last-resort error handler: always JSON for the API, never a stack trace.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err && err.type === 'entity.too.large') return res.status(413).json({ error: 'prompt_too_large' });
+  if (err && err.type === 'entity.parse.failed') return res.status(400).json({ error: 'bad_json' });
+  console.error('Unhandled error:', err && err.stack || err);
+  res.status(500).json({ error: 'server_error' });
+});
+
+process.on('unhandledRejection', e => console.error('Unhandled rejection:', e && e.stack || e));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('Maanas AI Academy server listening on ' + PORT));
+const server = app.listen(PORT, () => console.log('Maanas AI Academy server listening on ' + PORT));
+// Render's load balancer keeps idle connections open longer than Node's 5 s default;
+// without this, some requests randomly fail with 502 errors.
+server.keepAliveTimeout = 120 * 1000;
+server.headersTimeout = 125 * 1000;
+// Render sends SIGTERM on every deploy: finish in-flight requests, then exit cleanly.
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down…');
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 10000).unref();
+});

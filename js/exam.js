@@ -114,7 +114,7 @@ ${Quiz.SCHEMA}`;
         (r.questions || []).forEach(q => { const i = Math.max(0, Number(String(q.topic || 'T1').replace(/\D/g, '')) - 1); const t = topics[Math.min(i, topics.length - 1)]; const v = Quiz.validate(q, { concepts: t.concepts, asked: [] }, qs); if(v){ v.topicId = t.id; qs.push(v); } });
       } else {
         topics.filter(t => t.builtin).forEach(t => { M.shuffle(Pack[t.builtin].bank).forEach(q => { const v = Quiz.validate(q, { concepts: t.concepts, asked: [] }, qs); if(v){ v.topicId = t.id; qs.push(v); } }); });
-        if(!qs.length) throw new Error('Exam papers need the AI teacher (or the built-in lesson). Open this page inside Claude to switch the AI on.');
+        if(!qs.length) throw new Error('Exam papers need the AI teacher (or the built-in lesson). The AI teacher isn’t available right now, so try again in a minute.');
       }
       qs = qs.slice(0, len.n);
       if(qs.length < 3) throw new Error('The exam paper failed the quality check. Try again.');

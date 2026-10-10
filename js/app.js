@@ -16,4 +16,8 @@
   Store.connect().then(() => Revision.scan());
   // stale "checking" state safety: the runtime answers within ~10 s or resolves null
   setTimeout(() => { if(AI.status === 'checking'){ AI.status = 'off'; M.emit('ai'); } }, 12000);
+  // Offline support + instant repeat loads (see sw.js). Failure is harmless: the site just works online as before.
+  if('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')){
+    window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });
+  }
 })();

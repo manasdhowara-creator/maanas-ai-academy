@@ -391,3 +391,11 @@ details.fold > div{padding-bottom:14px}
 .flow-svg text{font-family:var(--f-body)}
 .claim{border:1px solid var(--line);border-radius:12px;padding:12px;display:flex;flex-direction:column;gap:6px}
 .claim.bad{border-color:color-mix(in srgb,var(--bad) 40%,var(--line))}
+
+/* ============ Accessibility: skip link + focus handling ============ */
+.skip-link{position:absolute;left:12px;top:-60px;z-index:1000;background:var(--accent);color:var(--accent-ink);padding:10px 16px;border-radius:var(--radius-sm);font-weight:700;text-decoration:none;transition:top .15s}
+.skip-link:focus{top:12px}
+#main:focus{outline:none}
+
+/* The HTML "hidden" attribute must always win — otherwise rules like .stack-sm{display:flex} keep "hidden" panels visible */
+[hidden]{display:none !important}

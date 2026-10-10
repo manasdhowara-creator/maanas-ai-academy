@@ -184,7 +184,13 @@
     M.emit('route', M.current);
     try { fn(view, param); }
     catch(e){ console.error(e); view.innerHTML = `<div class="stack"><h2>Something went wrong on this screen</h2>${M.errorHTML(String(e.message || e), 'go-home', 'Go to dashboard')}</div>`; }
-    if(M._lastRoute !== h){ window.scrollTo(0, 0); M._lastRoute = h; }
+    if(M._lastRoute !== h){
+      const first = M._lastRoute === undefined;
+      window.scrollTo(0, 0); M._lastRoute = h;
+      // Move keyboard / screen-reader focus to the new screen (not on first load, and not on re-renders of the same screen)
+      const mainEl = document.getElementById('main');
+      if(!first && mainEl) mainEl.focus({ preventScroll: true });
+    }
   };
   window.addEventListener('hashchange', M.render);
 
