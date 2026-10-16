@@ -37,7 +37,7 @@
   async function post(to, subject, html){
     let res;
     try {
-      res = await fetch('/api/email', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ to, subject, html }) });
+      res = await fetch('/api/email', { method:'POST', headers:{'Content-Type':'application/json','X-Requested-With':'maa'}, credentials:'same-origin', body: JSON.stringify({ to, subject, html }) });
     } catch(e){ throw new Error('Could not reach the server to send this email. Check your connection and try again.'); }
     if(!res.ok){
       let payload = {}; try { payload = await res.json(); } catch(_){}
@@ -46,6 +46,7 @@
         bad_recipient: 'Your saved email address looks invalid. Fix it in Settings.',
         missing_fields: 'Nothing to send yet.',
         send_failed: 'The email could not be sent. Try again in a bit.',
+        not_logged_in: 'Please log in again, then retry.',
         rate_limited: 'You’ve sent several emails recently. Please wait a while before sending more.',
         prompt_too_large: 'This email is too large to send. Try a smaller set of notes.',
       };

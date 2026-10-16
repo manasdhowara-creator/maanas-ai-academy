@@ -399,3 +399,49 @@ details.fold > div{padding-bottom:14px}
 
 /* The HTML "hidden" attribute must always win — otherwise rules like .stack-sm{display:flex} keep "hidden" panels visible */
 [hidden]{display:none !important}
+
+/* ============ login / sign-up ============ */
+.auth{min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px 16px calc(24px + env(safe-area-inset-bottom,0px));
+  background:radial-gradient(1200px 600px at 10% -10%,color-mix(in srgb,var(--accent) 16%,transparent),transparent 60%),radial-gradient(900px 500px at 110% 110%,color-mix(in srgb,var(--gold) 14%,transparent),transparent 60%),var(--bg)}
+.auth[hidden]{display:none}
+.auth-wrap{width:100%;max-width:980px;display:grid;gap:28px;align-items:center}
+.auth-hero{display:flex;flex-direction:column;gap:14px}
+.auth-title{font-size:clamp(2rem,7vw,3.2rem);font-weight:750;letter-spacing:-.02em}
+.auth-title span{color:var(--accent)}
+.auth-sub{color:var(--ink-2);max-width:46ch}
+.auth-points{list-style:none;margin:4px 0 0;padding:0;display:none;flex-direction:column;gap:10px}
+.auth-points li{display:flex;gap:10px;align-items:flex-start;color:var(--ink-2);font-size:.95rem}
+.auth-points svg{width:20px;height:20px;flex:none;color:var(--ok);margin-top:2px}
+.auth-card{background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:22px 18px;display:flex;flex-direction:column;gap:14px;width:100%;max-width:440px;justify-self:center}
+.auth-card h2{font-size:1.25rem}
+.auth-tabs{display:grid;grid-template-columns:1fr 1fr;background:var(--surface-2);border-radius:12px;padding:4px;gap:4px}
+.auth-tab{border:0;background:none;border-radius:9px;padding:10px 8px;font-weight:700;color:var(--muted);cursor:pointer;min-height:44px}
+.auth-tab.on{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.auth-card .input{min-height:48px;font-size:16px}
+.pass-row{display:flex;gap:8px;align-items:stretch}
+.pass-row .input{flex:1;min-width:0}
+.auth-err{background:var(--bad-soft);color:var(--bad);border-radius:10px;padding:10px 12px;font-size:.92rem;font-weight:600}
+.auth-err[hidden]{display:none}
+.auth-submit{min-height:50px;font-size:1.02rem;justify-content:center;width:100%}
+.auth-foot{text-align:center}
+@media (min-width:860px){.auth-wrap{grid-template-columns:1.1fr 1fr}.auth-points{display:flex}.auth-card{padding:28px 26px}}
+.app[hidden]{display:none}
+
+/* ============ account + sync status ============ */
+.acct{display:flex;align-items:center;gap:10px;min-width:0}
+.acct-av{flex:none;width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:var(--accent-ink);font-weight:750;font-family:var(--f-display)}
+.acct-txt{display:flex;flex-direction:column;min-width:0;line-height:1.25}
+.acct-txt b{color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acct-txt span{font-size:.8rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side-foot{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:12px}
+.sync-line{font-size:.8rem;color:var(--muted)}
+.sync-line.s-account{color:var(--ok)}
+.sync-line.s-offline{color:var(--warn)}
+.sync-badge{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--muted)}
+.sync-badge:empty{display:none}
+.sync-badge svg{width:16px;height:16px}
+.sync-badge.s-account{color:var(--ok)}
+.sync-badge.s-offline{color:var(--warn)}
+.mini-spin{width:14px;height:14px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);animation:spin .8s linear infinite}
+.topbar-right{display:flex;align-items:center;gap:8px}
+.sheet-acct{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}

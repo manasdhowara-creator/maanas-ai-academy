@@ -32,6 +32,7 @@
         images_unavailable: 'This view cannot send images to the AI teacher.',
         image_rejected: 'That image could not be read. Try a different file.',
         cancelled: 'Stopped.',
+        not_logged_in: 'Please log in again to use the AI teacher.',
         offline: 'The AI teacher is not available right now.',
       })[code] || 'The AI teacher could not answer (network or service problem). Try again.';
     },
@@ -59,7 +60,8 @@
       try {
         res = await fetch('/api/ai', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'maa' },
+          credentials: 'same-origin',
           body: JSON.stringify(body),
           signal: opts.signal,
         });
@@ -71,7 +73,8 @@
         let payload = {};
         try { payload = await res.json(); } catch(_){}
         let code = 'upstream_error';
-        if(res.status === 429) code = 'rate_limited';
+        if(res.status === 401){ if(window.Auth) Auth.expired(); code = 'not_logged_in'; }
+        else if(res.status === 429) code = 'rate_limited';
         else if(res.status === 400) code = payload.error === 'invalid_json' ? 'invalid_json' : 'refused';
         else if(res.status === 503) code = 'no_api_key';
         else if(payload.error) code = payload.error;

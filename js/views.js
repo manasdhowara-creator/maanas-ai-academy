@@ -21,14 +21,18 @@
     document.getElementById('sideNav').innerHTML = NAV.map(g => (g.g ? `<div class="side-group">${g.g}</div>` : '<div style="height:10px"></div>') + g.items.map(([id, label, ic]) => `<a class="side-link ${cur === id ? 'active' : ''}" href="#${id}" ${cur === id ? 'aria-current="page"' : ''}>${M.icon[ic]}<span>${label}</span>${badge(id)}</a>`).join('')).join('');
     const inTabs = TABS.some(t => t[0] === cur);
     document.getElementById('tabbar').innerHTML = TABS.map(([id, label, ic]) => `<a class="tab ${cur === id ? 'active' : ''}" href="#${id}">${M.icon[ic]}<span>${label}</span>${id === 'revise' && due ? '<span class="dot"></span>' : ''}</a>`).join('') + `<button class="tab ${!inTabs ? 'active' : ''}" data-action="open-sheet">${M.icon.grid}<span>More</span></button>`;
-    document.getElementById('sideFoot').innerHTML = `${Store.sync === 'account' ? '✓ Saved to your account' : Store.sync === 'connecting' ? 'Connecting…' : 'Saved on this device'}<br><span style="opacity:.8">Learn it. Prove it. Master it.</span>`;
+    const u = window.Auth && Auth.user;
+    document.getElementById('sideFoot').innerHTML = u ? `<div class="acct"><span class="acct-av" aria-hidden="true">${M.esc((u.name || '?').trim().charAt(0).toUpperCase())}</span><div class="acct-txt"><b>${M.esc(u.name)}</b><span>${M.esc(u.login)}</span></div></div><div class="sync-line s-${Store.sync}">${V.syncText()}</div><button class="btn sm ghost" data-action="logout" style="justify-content:flex-start">Log out</button>` : '';
+    const sb = document.getElementById('syncBadge');
+    if(sb){ sb.className = 'sync-badge s-' + Store.sync; sb.title = V.syncText(); sb.setAttribute('aria-label', V.syncText()); sb.innerHTML = Store.sync === 'account' ? M.icon.check : Store.sync === 'offline' ? M.icon.alert : '<span class="mini-spin"></span>'; }
     const pill = document.getElementById('aiPill');
     pill.className = 'ai-pill ' + (AI.status === 'on' ? 'on' : AI.status === 'checking' ? '' : 'off');
     pill.textContent = AI.status === 'on' ? '● AI teacher on' : AI.status === 'checking' ? 'AI: checking…' : '● AI off: offline mode';
   };
+  V.syncText = () => ({ account: '✓ All work saved to your account', saving: 'Saving to your account…', connecting: 'Connecting to your account…', offline: 'Offline — saved on this device, will upload automatically', device: 'Saved on this device' })[Store.sync] || '';
   M.action('open-sheet', () => {
     const all = NAV.flatMap(g => g.items);
-    document.getElementById('sheetPanel').innerHTML = `<div class="row-between"><h2>All sections</h2><button class="icon-btn" data-action="close-sheet" aria-label="Close">${M.icon.x}</button></div><div class="sheet-grid">${all.map(([id, label, ic]) => `<a class="sheet-item" href="#${id}" data-action="sheet-go" data-to="${id}">${M.icon[ic]}<span>${label}</span></a>`).join('')}</div>`;
+    document.getElementById('sheetPanel').innerHTML = `<div class="row-between"><h2>All sections</h2><button class="icon-btn" data-action="close-sheet" aria-label="Close">${M.icon.x}</button></div><div class="sheet-grid">${all.map(([id, label, ic]) => `<a class="sheet-item" href="#${id}" data-action="sheet-go" data-to="${id}">${M.icon[ic]}<span>${label}</span></a>`).join('')}</div>${Auth.user ? `<div class="sheet-acct"><div class="acct"><span class="acct-av" aria-hidden="true">${M.esc((Auth.user.name || '?').trim().charAt(0).toUpperCase())}</span><div class="acct-txt"><b>${M.esc(Auth.user.name)}</b><span>${M.esc(V.syncText())}</span></div></div><button class="btn sm" data-action="logout">Log out</button></div>` : ''}`;
     document.getElementById('sheet').hidden = false;
   });
   M.action('close-sheet', () => { document.getElementById('sheet').hidden = true; });
@@ -416,6 +420,7 @@
     const levels = ['','Class 2','Class 3','Class 4','Class 5','Class 6','Class 7','Class 8','Class 9','Class 10','Class 11','Class 12','College','Working professional'];
     view.innerHTML = `<div class="stack">
       <div><div class="eyebrow">Settings</div><h1>Settings</h1></div>
+      ${accountCard()}
       <div class="card stack"><h3>You</h3>
         <div class="grid grid-2"><div class="field"><label for="sName">Name</label><input class="input" id="sName" value="${M.esc(p.name)}"></div><div class="field"><label for="sLevel">Class / level</label><select class="select" id="sLevel">${levels.map(l => `<option value="${l}" ${p.level === l ? 'selected' : ''}>${l || 'Not set'}</option>`).join('')}</select></div></div>
         <div class="grid grid-2"><div class="field"><label for="sLang">Language</label><select class="select" id="sLang">${['English','Easy English','Hinglish'].map(l => `<option ${p.language === l ? 'selected' : ''}>${l}</option>`).join('')}</select></div><div class="field"><label for="sPref">Learning preference</label><select class="select" id="sPref">${[['mixed','A mix'],['visual','Visuals & diagrams'],['examples','Real-life examples'],['steps','Step-by-step']].map(([k, l]) => `<option value="${k}" ${p.pref === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div></div>
@@ -425,7 +430,7 @@
       <div class="card stack-sm"><h3>Teacher voice</h3>${voices.length ? `<select class="select" id="sVoice"><option value="">Automatic</option>${voices.map(v => `<option value="${M.esc(v.voiceURI)}" ${p.voiceURI === v.voiceURI ? 'selected' : ''}>${M.esc(v.name)} (${M.esc(v.lang)})</option>`).join('')}</select><button class="btn sm" data-action="test-voice" style="align-self:flex-start">${M.icon.volume} Test voice</button>` : '<p class="small muted">Your browser hasn’t provided voices yet (or has none). Lessons still play with captions.</p>'}</div>
       <div class="card stack-sm"><h3>Appearance</h3><div class="chips">${['system','light','dark'].map(t => `<button class="chip ${theme === t ? 'on' : ''}" data-action="set-theme" data-t="${t}">${M.cap(t)}</button>`).join('')}</div></div>
       <div class="card stack-sm"><h3>AI teacher</h3><p class="small">${AI.status === 'on' ? '✓ On. Your AI teacher runs on free-tier AI models (Google Gemini, with Groq as a backup) through this academy’s server. There’s nothing for you to pay for or set up.' : M.esc(AI.friendly(AI.status === 'denied' ? 'not_granted' : 'offline'))}</p><p class="small muted">Works without AI: the built-in lesson, Coding Lab (tests + security review), spaced revision schedule, Mistake Bank, notes, PDF reading, and exams on the built-in lesson.</p></div>
-      <div class="card stack-sm"><h3>Your data</h3><p class="small">${Store.sync === 'account' ? '✓ Saved privately to your account, so it follows you across devices. Also cached on this device.' : 'Your progress is saved in this browser, on this device only. Clearing browser data, switching device or using a private window will erase it, so download a backup now and then.' + (() => { let t = 0; try { t = +localStorage.getItem('maa.lastBackup') || 0; } catch(_){} return t ? ' Last backup: ' + M.fmtDate(t) + '.' : ' You haven’t downloaded a backup yet.'; })()}</p>
+      <div class="card stack-sm"><h3>Your data</h3><p class="small">Everything you do is saved privately to your account and follows you to any device you log in on. A copy is also kept on this device so the app works offline. A backup file is optional extra safety.</p>
         <div class="row"><button class="btn sm primary" data-action="download-backup">Download backup file</button><button class="btn sm" data-action="pick-backup">Restore from file</button><input type="file" id="importFile" accept="application/json,.json" hidden aria-label="Choose a backup file"><button class="btn sm" data-action="export-data">${M.icon.copy} Copy backup</button><button class="btn sm" data-action="import-toggle">Paste backup</button><button class="btn danger sm" data-action="reset-data">Erase all data</button></div>
         <div id="importBox" hidden class="stack-sm"><textarea class="textarea" id="importText" rows="4" placeholder="Paste a backup here"></textarea><button class="btn sm primary" data-action="import-data" style="align-self:flex-start">Restore</button></div></div>
       <details class="fold"><summary>What’s real in this academy</summary><div class="small stack-sm">
@@ -438,7 +443,24 @@
       </div></details>
     </div>`;
   });
+  function accountCard(){
+    const u = Auth.user || {};
+    return `<div class="card stack-sm"><div class="row-between"><h3>Account</h3><span class="sync-line s-${Store.sync}">${M.esc(V.syncText())}</span></div>
+      <div class="acct"><span class="acct-av" aria-hidden="true">${M.esc((u.name || '?').trim().charAt(0).toUpperCase())}</span><div class="acct-txt"><b>${M.esc(u.name || '')}</b><span>Logged in as ${M.esc(u.login || '')}</span></div></div>
+      <div class="row"><button class="btn sm primary" data-action="logout">Log out</button><button class="btn sm" data-action="logout-others">Log out on all other devices</button></div>
+      <details class="fold"><summary>Change password</summary><div class="stack-sm" style="padding-top:8px">
+        <div class="grid grid-2"><div class="field"><label for="pwCur">Current password</label><input class="input" id="pwCur" type="password" autocomplete="current-password"></div><div class="field"><label for="pwNew">New password</label><input class="input" id="pwNew" type="password" autocomplete="new-password" minlength="6" placeholder="At least 6 characters"></div></div>
+        <button class="btn sm primary" data-action="change-password" style="align-self:flex-start">Change password</button></div></details>
+      <details class="fold"><summary>Delete my account</summary><div class="stack-sm" style="padding-top:8px"><p class="small">This permanently deletes your account and all your study data from the server. It cannot be undone.</p>
+        <div class="field"><label for="delPw">Type your password to confirm</label><input class="input" id="delPw" type="password" autocomplete="current-password"></div>
+        <button class="btn sm danger" data-action="delete-account" style="align-self:flex-start">Delete account permanently</button></div></details>
+    </div>`;
+  }
   M.action('save-settings', () => { const p = Store.state.profile; const v = id => document.getElementById(id).value;
+    if(!v('sName').trim()) return M.toast('Please enter your name.');
+    if(v('sEmail').trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v('sEmail').trim())) return M.toast('That email address doesn’t look right.');
+    p.email = v('sEmail').trim();
+    if(Auth.user && v('sName').trim() !== Auth.user.name){ Auth.api('/auth/name', { method:'POST', body:{ name: v('sName').trim() } }).then(r => { Auth.user = r.user; try { localStorage.setItem('maa.user', JSON.stringify(r.user)); } catch(_){} M.emit('auth'); }).catch(() => {}); }
     p.name = v('sName').trim(); p.level = v('sLevel'); p.language = v('sLang'); p.pref = v('sPref'); p.subjects = v('sSubj').split(',').map(s => s.trim()).filter(Boolean);
     const sv = document.getElementById('sVoice'); if(sv) p.voiceURI = sv.value || null; p.onboarded = true;
     Store.touch('profile'); M.toast('Saved'); });
@@ -474,7 +496,7 @@
   M.action('import-data', () => { try { Store.importJSON(document.getElementById('importText').value); M.toast('Backup restored'); M.go('dashboard'); } catch(e){ M.toast(e.message || 'That backup could not be read.'); } });
   M.action('reset-data', el => {
     if(el.dataset.confirm !== '1'){ el.dataset.confirm = '1'; el.textContent = 'Tap again to erase everything permanently'; setTimeout(() => { if(el.isConnected){ el.dataset.confirm = ''; el.textContent = 'Erase all data'; } }, 5000); return; }
-    Store.resetAll(); try { localStorage.removeItem('maa.coach'); localStorage.removeItem('maa.exam'); } catch(_){} M.toast('All data erased'); M.go('learn');
+    Store.resetAll(); M.toast('All study data erased (your account stays).'); M.go('learn');
   });
 })();
  

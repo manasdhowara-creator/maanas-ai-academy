@@ -11,6 +11,7 @@
 const express = require('express');
 const compression = require('compression');
 const path = require('path');
+const { createAccounts } = require('./accounts');
 
 const app = express();
 app.disable('x-powered-by');
@@ -43,8 +44,9 @@ function rateLimit({ windowMs, max }) {
   }, 60 * 1000).unref();
   return (req, res, next) => {
     const now = Date.now();
-    let e = hits.get(req.ip);
-    if (!e || e.reset <= now) { e = { n: 0, reset: now + windowMs }; hits.set(req.ip, e); }
+    const who = req.user ? 'u:' + req.user.id : 'ip:' + req.ip;   // per learner once logged in (a class can share one IP)
+    let e = hits.get(who);
+    if (!e || e.reset <= now) { e = { n: 0, reset: now + windowMs }; hits.set(who, e); }
     e.n++;
     if (e.n > max) {
       res.setHeader('Retry-After', String(Math.max(1, Math.ceil((e.reset - now) / 1000))));
@@ -64,6 +66,10 @@ const emailLimiter = rateLimit({
 
 // Body parsers: a big limit ONLY where it is needed (AI requests carry source text + images).
 app.use('/api/ai', express.json({ limit: '16mb' }));
+
+/* ---------- Learner accounts + private per-learner cloud data (see accounts.js) ---------- */
+const accounts = createAccounts();
+app.use('/api', accounts.router);
 app.use(express.json({ limit: '1mb' }));
 
 /* ---------- Static files: an explicit allow-list ----------
@@ -147,9 +153,10 @@ async function getModels() {
   return [process.env.GEMINI_MODEL, ...HARDCODED_FALLBACK].filter(Boolean);
 }
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ ok: !!(GEMINI_API_KEY || GROQ_API_KEY), email: !!RESEND_API_KEY });
+  const acc = await accounts.health();
+  res.json({ ok: !!(GEMINI_API_KEY || GROQ_API_KEY), email: !!RESEND_API_KEY, accounts: acc.ok ? acc.kind : 'down' });
 });
 
 // Lightweight liveness check (no AI involved) — point Render's health check / an uptime monitor here.
@@ -160,7 +167,7 @@ app.get('/healthz', (req, res) => { res.setHeader('Cache-Control', 'no-store'); 
    their saved profile — never typed in by hand here), so each learner
    only ever receives their own notes. Returns success ONLY after Resend
    actually confirms the send — never a fake "sent" response. */
-app.post('/api/email', emailLimiter, async (req, res) => {
+app.post('/api/email', accounts.requireUser, emailLimiter, async (req, res) => {
   try {
     if (!RESEND_API_KEY) return res.status(503).json({ error: 'email_not_configured' });
     const { to, subject, html, text } = req.body || {};
@@ -251,10 +258,25 @@ function extractJson(rawText) {
   return undefined;
 }
 
-async function callModel(model, body) {
+/* Model health memory: a model that just timed out / was busy is tried LAST for a few minutes,
+   and the model that last answered well is tried FIRST. Before this, every request waited 45 s on
+   the same overloaded newest model before moving on (seen in the live logs). */
+const modelPenalty = new Map();   // model -> time until which it is demoted
+let lastGoodModel = null;
+function orderModels(list) {
+  const now = Date.now();
+  const risky = m => /preview|exp|omni/i.test(m) ? 1 : 0;
+  return list.slice().sort((a, b) =>
+    ((modelPenalty.get(a) || 0) > now) - ((modelPenalty.get(b) || 0) > now) ||
+    (b === lastGoodModel) - (a === lastGoodModel) ||
+    risky(a) - risky(b));
+}
+const demote = (m, ms) => modelPenalty.set(m, Date.now() + ms);
+
+async function callModel(model, body, timeoutMs = FETCH_TIMEOUT_MS) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const upstream = await fetch(url, {
       method: 'POST',
@@ -272,7 +294,7 @@ const MAX_PROMPT_CHARS = 400000;   // roughly a long book chapter
 const MAX_IMAGES = 4;
 const IMAGE_MIME = /^image\/(png|jpe?g|webp|gif|heic|heif)$/i;
 
-app.post('/api/ai', aiLimiter, async (req, res) => {
+app.post('/api/ai', accounts.requireUser, aiLimiter, async (req, res) => {
   try {
     if (!GEMINI_API_KEY && !GROQ_API_KEY) return res.status(503).json({ error: 'no_api_key' });
 
@@ -312,18 +334,25 @@ app.post('/api/ai', aiLimiter, async (req, res) => {
     const body = { contents, generationConfig: { maxOutputTokens: 8192 } };
     if (json) body.generationConfig.responseMimeType = 'application/json';
 
-    const MODELS = GEMINI_API_KEY ? await getModels() : [];
+    const MODELS = GEMINI_API_KEY ? orderModels(await getModels()) : [];
     let lastErrDetail = '', lastErrStatus = 502, lastInvalidRaw = '';
+    const deadline = Date.now() + 110 * 1000;   // whole request budget, so the learner never waits forever
+    let aborted = false;
+    req.on('close', () => { if (!res.writableEnded) aborted = true; });
 
     for (let i = 0; i < MODELS.length; i++) {
+      if (aborted) return;
       const model = MODELS[i];
       const isLastModel = i === MODELS.length - 1;
+      const left = deadline - Date.now() - (GROQ_API_KEY ? 25000 : 0);
+      if (left < 8000) break;
       let upstream;
       try {
-        upstream = await callModel(model, body);
+        upstream = await callModel(model, body, Math.min(left, i === 0 ? 70000 : 45000));
       } catch (e) {
         console.warn(`Gemini model ${model} request failed (${e.name}: ${e.message}), trying next...`);
         lastErrDetail = e.message || 'network error';
+        demote(model, 10 * 60 * 1000);
         continue; // network hiccup / timeout — try the next model
       }
 
@@ -331,7 +360,8 @@ app.post('/api/ai', aiLimiter, async (req, res) => {
         let detail = '';
         try { detail = (await upstream.text()).slice(0, 500); } catch (_) {}
         lastErrDetail = detail; lastErrStatus = upstream.status;
-        if (upstream.status === 503 || upstream.status === 404 || upstream.status === 429) {
+        if (upstream.status === 503 || upstream.status === 404 || upstream.status === 429 || upstream.status >= 500) {
+          demote(model, upstream.status === 404 ? 60 * 60 * 1000 : 5 * 60 * 1000);
           console.warn(`Gemini model ${model} unavailable (${upstream.status}), trying next fallback...`);
           continue; // busy / doesn't exist / rate-limited on this model — try next
         }
@@ -353,10 +383,10 @@ app.post('/api/ai', aiLimiter, async (req, res) => {
         continue;
       }
 
-      if (!json) return res.json({ text });
+      if (!json) { lastGoodModel = model; return res.json({ text }); }
 
       const parsed = extractJson(text);
-      if (parsed !== undefined) return res.json({ parsed });
+      if (parsed !== undefined) { lastGoodModel = model; return res.json({ parsed }); }
 
       lastInvalidRaw = text.slice(0, 800);
       console.warn(`Gemini model ${model} gave unparsable JSON, trying next...`, isLastModel ? '(no more models left)' : '');

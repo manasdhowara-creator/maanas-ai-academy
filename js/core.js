@@ -175,6 +175,7 @@
   M.current = { name: null, param: null };
   M.go = (hash) => { if(location.hash === '#' + hash) M.render(); else location.hash = hash; };
   M.render = () => {
+    if(window.Auth && !Auth.user) return;   // nothing renders behind the login screen
     const h = (location.hash || '').slice(1) || 'home';
     const [name, ...rest] = h.split('-');
     const param = rest.join('-') || null;

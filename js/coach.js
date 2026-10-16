@@ -1,10 +1,11 @@
 /* coach.js — AI Coach: a persistent tutor (English / Easy English / Hinglish) that explains, questions, detects confusion,
    draws simple diagrams, quizzes, reteaches and challenges — with the learner's topic, weak spots and mistakes as context. */
 (function(){
-  const LS = 'maa.coach';
+  // The chat is part of the learner's account data (Store 'session' doc), so it follows them across devices.
   const Coach = window.Coach = { turns: [], topicId: null, ctl: null, busy: false };
-  try { const s = JSON.parse(localStorage.getItem(LS) || 'null'); if(s){ Coach.turns = s.turns || []; Coach.topicId = s.topicId || null; } } catch(_){}
-  const save = () => { try { localStorage.setItem(LS, JSON.stringify({ turns: Coach.turns.slice(-40), topicId: Coach.topicId })); } catch(_){} };
+  const hydrate = () => { if(Coach.busy) return; const c = Store.state.coach || {}; Coach.turns = Array.isArray(c.turns) ? c.turns.slice() : []; Coach.topicId = c.topicId || null; };
+  M.on('userdata', hydrate);
+  const save = () => { Store.state.coach = { turns: Coach.turns.slice(-40), topicId: Coach.topicId }; Store.touch('session'); };
 
   Coach.setContext = (tid) => { if(Coach.topicId !== tid){ Coach.topicId = tid; Coach.turns = []; save(); } };
 

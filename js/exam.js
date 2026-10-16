@@ -1,10 +1,10 @@
 /* exam.js — Exam Engine: Exam War Room (date → analysis → adaptive day plan) and Exam Mode (timed, mixed, no hints,
    subjective answers, detailed analysis → fix → retest). */
 (function(){
-  const LS = 'maa.exam';
+  // A test in progress is part of the learner's account data (Store 'session' doc): start on the phone, finish on the laptop.
   const E = window.Exam = { cur: null, timer: null, busy: false, err: null };
-  try { E.cur = JSON.parse(localStorage.getItem(LS) || 'null'); } catch(_){}
-  const persist = () => { try { if(E.cur) localStorage.setItem(LS, JSON.stringify(E.cur)); else localStorage.removeItem(LS); } catch(_){} };
+  M.on('userdata', () => { if(!E.grading) E.cur = Store.state.examCur || null; });
+  const persist = () => { Store.state.examCur = E.cur || null; Store.touch('session'); };
   const MARKS_WRITTEN = 3;
 
   /* ================= WAR ROOM ================= */
