@@ -3,7 +3,7 @@
 (function(){
   Views.applyTheme();
   M.on('route', () => Views.nav());
-  M.on('ai', () => { Views.nav(); if(['learn','home','coach','settings','labs','dashboard'].includes(M.current.name)) M.render(); });
+  M.on('ai', () => { Views.nav(); if(['learn','home','coach','settings','labs','dashboard','library'].includes(M.current.name)) M.render(); });
   M.on('sync', () => { Views.nav(); if(M.current.name === 'settings' && !document.activeElement?.matches('input,textarea,select')) M.render(); });
   M.on('auth', () => Views.nav());
   let pend = false;

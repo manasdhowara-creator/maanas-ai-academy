@@ -310,10 +310,33 @@
       </div>
       <div id="libList">${libListHTML()}</div>
     </div>`;
+    autoFixChapters();
     view.querySelector('#libSubject').addEventListener('input', e => { V.libSubjectInput = e.target.value; });
     view.querySelector('#libFile').addEventListener('change', e => { const f = e.target.files[0]; if(f) addToLibrary(f); e.target.value = ''; });
   });
  
+  /* PDFs saved before smart detection existed (or whose detection failed) were split into page ranges.
+     Fix them automatically, in the background, one book at a time — no button needed. */
+  V.fixing = V.fixing || {};
+  async function autoFixChapters(force){
+    if(!AI.ready()) return;
+    for(const b of Store.state.library){
+      const st = b.structure || {};
+      const needs = force === b.id || (st.method === 'chunks' || (st.method === 'whole' && b.pages && b.pages.length > 30)) && !b.chapterFixTried;
+      if(!needs || V.fixing[b.id] || !b.pages || !b.pages.length) continue;
+      V.fixing[b.id] = true; if(M.current.name === 'library') M.render();
+      try {
+        let next = Source.chapters(b);
+        if(next.method === 'chunks' || force === b.id) { try { next = await Source.chaptersAI(b); } catch(_){ } }
+        b.structure = next.method === 'chunks' && st.method !== 'chunks' ? st : next;
+      } catch(_){}
+      b.chapterFixTried = true; delete V.fixing[b.id];
+      Store.saveLibraryBook(b);
+      if(M.current.name === 'library') M.render();
+    }
+  }
+  M.action('lib-redetect', el => { const b = Store.state.library.find(x => x.id === el.dataset.book); if(b){ b.chapterFixTried = false; autoFixChapters(b.id); } });
+
   function libStatusHTML(){
     if(V.libBusy) return M.loadingHTML(V.libBusy, 'Everything is processed in your browser');
     if(V.libErr) return M.errorHTML(V.libErr);
@@ -353,7 +376,9 @@
         ${open ? `<div class="stack-sm" style="margin-top:12px">${books.map(b => `
           <div class="stack-sm">
             <div class="row-between"><div class="small muted">${smallIcon('book')} ${M.esc(b.name)}${b.scanned ? ' · scanned' : ''}</div><button class="icon-btn" data-action="lib-remove" data-book="${b.id}" aria-label="Remove this PDF">${M.icon.trash}</button></div>
-            <div class="mini-list">${b.structure.list.map((c, i) => `<div class="mini-item" style="cursor:default"><div class="grow"><div class="t">${M.esc(c.title)}</div><div class="s">Pages ${c.start}–${c.end}</div></div><button class="btn sm primary" data-action="lib-study" data-book="${b.id}" data-i="${i}">Study</button></div>`).join('')}</div>
+            ${V.fixing[b.id] ? `<div class="notice small"><span class="mini-spin"></span><div>Finding the real chapters in this PDF…</div></div>` : ''}
+            <div class="mini-list">${b.structure.list.map((c, i) => `<div class="mini-item" style="cursor:default"><div class="grow"><div class="t">${M.esc(c.title)}</div><div class="s">Pages ${c.start}–${c.end}</div></div><button class="btn sm primary" data-action="lib-study" data-book="${b.id}" data-i="${i}">Teach full chapter</button></div>`).join('')}</div>
+            ${!V.fixing[b.id] ? `<button class="btn ghost sm" data-action="lib-redetect" data-book="${b.id}" style="align-self:flex-start">Chapters look wrong? Detect again with AI</button>` : ''}
           </div>`).join('')}</div>` : ''}
       </div>`;
     }).join('')}</div>`;
