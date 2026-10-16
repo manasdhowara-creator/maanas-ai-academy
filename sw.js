@@ -4,7 +4,7 @@
    same version's cache, so a learner can never get a broken mix of old and new code. When a new
    version is ready, the page reloads itself once (see app.js). /api/* is never cached: logins, data
    sync and AI always go to the live server. Bump VERSION on every release. */
-const VERSION = 'maa-v3-2026-10-16';
+const VERSION = 'maa-v4-2026-10-16';
 const SHELL = [
   '/', '/styles.css', '/manifest.webmanifest', '/favicon.svg', '/icon-192.png',
   '/js/core.js', '/js/store.js', '/js/auth.js', '/js/ai.js', '/js/mastery.js', '/js/revision.js', '/js/quiz.js',

@@ -50,7 +50,7 @@
         rate_limited: 'You’ve sent several emails recently. Please wait a while before sending more.',
         prompt_too_large: 'This email is too large to send. Try a smaller set of notes.',
       };
-      throw new Error(msgs[payload.error] || 'The email could not be sent.');
+      throw new Error(payload.detail || msgs[payload.error] || 'The email could not be sent.');
     }
     return res.json();
   }
@@ -101,6 +101,30 @@
         section('Important questions', ul(s.questions)),
       ].join('');
       await withButton(btn, () => post(Store.state.profile.email, 'One-Page Revision: ' + t.title, shell('One-Page Revision', t.title, body)));
+    },
+
+    /* One email at the end of a chapter: complete notes + EVERY formula + revision + important questions with answers. */
+    async sendChapterPack(t, to){
+      const n = t.masterNotes || {};
+      const formulas = Store.state.formulas.filter(f => f.topicId === t.id);
+      const allF = formulas.length ? formulas : (n.formulas || []);
+      const rv = t.revision;
+      const body = [
+        section('Chapter overview', n.overview ? `<p style="line-height:1.6">${md(n.overview)}</p>` : ''),
+        section('Core concepts', ul(n.coreConcepts)),
+        section('Definitions', defs(n.definitions)),
+        section(`All formulas of this chapter (${allF.length})`, allF.map(formulaBlock).join('')),
+        section('Worked examples', (n.examples || []).map(e => `<div style="margin-bottom:10px"><b>${esc(e.title)}</b><div style="line-height:1.6;white-space:pre-wrap">${md(e.body)}</div></div>`).join('')),
+        section('Key facts', ul(n.keyFacts)),
+        section('Common mistakes', ul(n.mistakes)),
+        section('Exam points', ul(n.examPoints)),
+        section('Memory aids', ul(n.memoryAids)),
+        rv ? section('Full chapter revision', ul(rv.points)) : '',
+        rv && rv.traps && rv.traps.length ? section('Exam traps', ul(rv.traps)) : '',
+        rv ? section(`Most important questions (${rv.questions.length}) — with model answers`, rv.questions.map((q, i) => `<div style="margin:0 0 12px;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px"><div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em">${esc(q.type)}</div><div style="font-weight:700;margin:2px 0 6px">Q${i + 1}. ${md(q.q)}</div><div style="line-height:1.6;white-space:pre-wrap;color:#1f2937">${md(q.answer)}</div></div>`).join('')) : section('Important questions', ul(n.importantQuestions)),
+        section('Everything you must know', ul(n.checklist)),
+      ].join('');
+      await post(to, `Chapter notes + all formulas: ${t.title}`, shell('Chapter Notes & Formulas', t.title, body));
     },
 
     async sendFormulas(t, btn){

@@ -17,7 +17,19 @@
      .finally(() => { delete L.inflight[key]; L.refresh(); });
     return p;
   };
-  L.refresh = () => { if(M.current.name === 'topic') M.render(); else M.emit('store', 'task'); };
+  // Re-render when background work finishes — but never while the learner is typing an answer (it would wipe it).
+  let refreshWaiting = false;
+  L.refresh = () => {
+    if(M.current.name !== 'topic') return M.emit('store', 'task');
+    const a = document.activeElement;
+    const typing = a && a.matches && a.matches('textarea, input[type=text], input:not([type])') && a.closest('#view') && a.value;
+    const picked = document.querySelector('#view [data-cp-wrap] input:checked, #view .stage-card input:checked');
+    if(typing || picked){
+      if(!refreshWaiting){ refreshWaiting = true; M.toast('New parts of your lesson are ready.'); document.addEventListener('click', function once(e){ if(e.target.closest('[data-action]')){ document.removeEventListener('click', once, true); refreshWaiting = false; setTimeout(L.refresh, 600); } }, true); }
+      return;
+    }
+    M.render();
+  };
   const peek = () => document.querySelector('[data-peek]');
  
   /* ================= creating topics ================= */
@@ -47,7 +59,7 @@
  
   L.startSource = (book, ch, text) => {
     const t = Mastery.newTopic({ title: ch.title, query: book.name + ' ' + ch.title, planned: false,
-      source: { name: book.name, chapter: ch.title, pages: `${ch.start}–${ch.end}`, text: text.slice(0, 45000), truncated: text.length > 45000, sections: ch.sections || [] } });
+      source: { name: book.name, chapter: ch.title, pages: `${ch.start}–${ch.end}`, text: text.slice(0, 300000), truncated: text.length > 300000, sections: ch.sections || [] } });
     Store.saveTopic(t); M.go('topic-' + t.id);
   };
  
@@ -62,7 +74,7 @@ Plan it. Reply ONLY JSON:
  "level":"the learner level to teach at (use the learner's level if known; otherwise infer, e.g. 'Class 8', 'Beginner adult')",
  "overview":"one sentence: what mastering this means",
  "parts": [] or, ONLY if this is a whole course too big for one sitting (e.g. 'Python from zero', 'Machine Learning'), 4-10 ordered part titles — the first part becomes this lesson,
- ${t.source ? '"tree":[{"section":"heading from source","topics":[{"name":"...","subtopics":["..."]}]}],' : ''}
+ ${t.source ? '"tree":[{"section":"heading from source","topics":[{"name":"...","subtopics":["..."]}]}],' : `"outline":[the COMPLETE chapter/topic syllabus in teaching order, exactly as a top textbook for this level would cover it (for school classes follow the NCERT chapter's own sections) — 5-14 units, nothing important left out: {"title":"unit title","covers":["every sub-point, definition, law, derivation, activity and type of numerical this unit must teach"]}],`}
  "concepts":[{"id":"c1","name":"…"}] (4-7 core concepts of THIS lesson (the first part if split), in teaching order),
  "diagnostic":[4 questions: easy→medium, types: 2 mcq, 1 tf or fill, 1 short; one targets a common misconception]}
 Diagnostic questions use this format:
@@ -78,10 +90,13 @@ ${Quiz.SCHEMA}`;
     t.level = String(r.level || Store.state.profile.level || '').slice(0, 40);
     t.overview = String(r.overview || '').slice(0, 240);
     if(r.tree && t.source) t.source.tree = r.tree;
+    if(!t.source && Array.isArray(r.outline)) t.outline = r.outline.filter(u => u && (u.title || typeof u === 'string')).map(u => typeof u === 'string' ? { title: u, covers: [] } : { title: String(u.title).slice(0, 100), covers: Array.isArray(u.covers) ? u.covers.map(String).slice(0, 12) : [] }).slice(0, 16);
     const diagList = Array.isArray(r.diagnostic) ? r.diagnostic : (r.diagnostic && Array.isArray(r.diagnostic.questions) ? r.diagnostic.questions : []);
     const dq = []; diagList.forEach(q => { const v = Quiz.validate(q, t, dq); if(v) dq.push(v); });
     t.diagnostic = { questions: dq, answers: {}, done: dq.length === 0, skipped: dq.length === 0 };
     t.planned = true; Store.saveTopic(t);
+    // Start teaching right away in the background: by the time the quick check is done, parts are ready.
+    if(!t.builtin && !t.lesson) setTimeout(() => { const tt = Store.topic(t.id); if(tt && !tt.lesson) L.buildLesson(tt); }, 0);
   });
  
   L.startPart = (t, idx) => {
@@ -92,48 +107,168 @@ ${Quiz.SCHEMA}`;
     Store.saveTopic(n); M.go('topic-' + n.id);
   };
  
-  /* ================= AI: lesson ================= */
-  L.buildLesson = (t) => L.task('lesson-' + t.id, async () => {
-    if(t.builtin){ const pk = Pack[t.builtin]; t.lesson = { sections: pk.sections.map(s => ({ ...s, origin:'extra', checkpoint: Quiz.validate(s.checkpoint, t) })), summary:'', qc: null }; t.lesson.qc = qcLesson(t); Store.saveTopic(t); return; }
-    const d = t.diagnostic || {}; const res = d.result || {};
-    const known = (res.known || []).map(id => Mastery.conceptName(t, id)), weak = (res.weak || []).map(id => Mastery.conceptName(t, id));
-    const src = t.source ? `\nSOURCE (the learner's uploaded material — authoritative for source-specific facts):\n"""${t.source.text.slice(0, 30000)}"""\nRULES: For each section set "origin":"source" if its core content comes from the SOURCE, and copy one EXACT sentence from the source into "sourceQuote". Anything you add beyond the source must be in a section with "origin":"extra" (EXTRA EXPLANATION). Never invent textbook-specific facts, page numbers or exercises.\n` : '';
-    const pathNote = t.pathSeed ? `This is part ${t.pathSeed.index + 1} of the course "${t.pathSeed.course}" (parts: ${t.pathSeed.parts.join(' → ')}). Teach only this part; assume earlier parts are known.` : '';
-    const prompt = `You are an outstanding teacher writing a complete mastery lesson.
+  /* ================= AI: lesson — the Chapter Teacher =================
+     The WHOLE chapter is taught, in the book's own order, line by line:
+     - With a PDF: the chapter text is cut into parts at natural breaks (no page is skipped), and every
+       part is taught by its own AI call: each important line of the book → what it means, why, an example.
+     - Without a PDF: the plan step lays out the complete chapter syllabus, and every unit is taught the same way.
+     Parts are taught in PARALLEL (3 at a time) and appear on screen the moment each is ready, so the learner
+     starts reading in ~30 s instead of waiting for one giant answer. A failed part can be retried on its own. */
+  const CONCURRENCY = 3;
+  function splitUnits(text){
+    const clean = String(text || '').replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').trim();
+    const target = Math.max(4200, Math.ceil(clean.length / 28));
+    const lines = clean.split('\n');
+    const isHead = l => { const x = l.trim(); return x.length > 2 && x.length < 80 && !/[.,;:]$/.test(x) && /^([0-9]{1,2}(\.[0-9]{1,2})*\s+\S|[A-Z][A-Za-z]|ACTIVITY|Activity|Example|EXAMPLE)/.test(x); };
+    const units = []; let cur = [], len = 0, title = '';
+    const push = () => { const body = cur.join('\n').trim(); if(body.length > 40) units.push({ title: title || '', text: body }); cur = []; len = 0; title = ''; };
+    lines.forEach(l => {
+      if(len >= target * 0.65 && isHead(l)) push();
+      else if(len >= target * 1.25 && /[.!?]\s*$/.test(cur[cur.length - 1] || '')) push();
+      if(!cur.length && isHead(l)) title = l.trim().slice(0, 80);
+      cur.push(l); len += l.length + 1;
+    });
+    push();
+    // fold a tiny tail into the previous part
+    if(units.length > 1 && units[units.length - 1].text.length < target * 0.25){ const last = units.pop(); units[units.length - 1].text += '\n' + last.text; }
+    return units.map((u, i) => ({ title: u.title || `Part ${i + 1}`, text: u.text }));
+  }
+
+  async function pool(items, n, fn){
+    let next = 0;
+    const worker = async () => { while(next < items.length){ const i = next++; await fn(items[i], i); } };
+    await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
+  }
+
+  function unitPrompt(t, u, i, units, ctx){
+    const prevHeads = units.slice(Math.max(0, i - 2), i).map(x => x.title).join(' | ');
+    const numeric = ['maths','physics','chemistry'].includes(t.subjectKind);
+    const what = t.source
+      ? `THIS IS PART ${i + 1} OF ${units.length} OF THE CHAPTER, exactly as it appears in the learner's PDF ("${t.source.name}"):
+"""${u.text}"""
+TEACH THIS TEXT COMPLETELY, IN ITS OWN ORDER. Split it into 1-3 sections at its own headings. In "lines", go through the text sentence by sentence: include EVERY sentence that carries meaning (definitions, statements, laws, facts, activity steps, observations, conclusions, examples, questions in boxes) — skip only page numbers, running headers and figure numbers. "text" = the sentence copied EXACTLY from the text above (you may cut a very long sentence with "…"). Never invent textbook content: anything you add goes in "explain", "body" or "example".`
+      : `THIS IS UNIT ${i + 1} OF ${units.length} OF THE COMPLETE CHAPTER: "${u.title}"${u.covers && u.covers.length ? `\nIt must cover: ${u.covers.join('; ')}` : ''}
+Full chapter order: ${units.map((x, j) => (j + 1) + '. ' + x.title).join(' → ')}
+TEACH THIS UNIT COMPLETELY, like the best textbook for this level (NCERT/CBSE style for school classes). Split it into 1-3 sections. In "lines", build the content statement by statement, exactly as a textbook would state it (definitions, laws, facts, steps of derivations, steps of activities, worked examples) — "text" is the precise textbook-style statement, "explain" is your teaching of it.`;
+    return `You are the world's best teacher — far better than any coaching class — teaching one learner who wants to TOP their class.
 ${AI.learner(t)}
-TOPIC: ${t.title} (${t.subject}) ${pathNote}
-CONCEPTS (cover every one):
-${t.concepts.map(c => c.id + ': ' + c.name).join('\n')}
-DIAGNOSTIC: ${known.length ? 'already seems to know: ' + known.join(', ') + ' (keep these brief, don\'t skip).' : ''} ${weak.length ? 'struggled with: ' + weak.join(', ') + ' (teach these most carefully).' : ''}${!known.length && !weak.length ? 'no diagnostic data (assume a beginner at this level).' : ''}
-${src}
-This lesson REPLACES a video/human-teacher explanation — it is the primary, complete way this learner masters the topic. Make it so clear, visual and well-structured that a student would prefer it over a YouTube video.
-Write 6-10 sections that progress Basic → Foundation → Intermediate → Advanced → Mastery. LESS THEORY, MORE UNDERSTANDING: short paragraphs, no walls of text, no repetition or filler — but never cut content a student needs.
-Each section needs:
-- "body": a clear explanation (markdown, 60-160 words; short paragraphs, bullets, **bold** key terms, plain Unicode maths, definitions where relevant).
-- "example": ONE concrete worked example, real-life example, or step-by-step solution.
-- "visual": a diagram that makes THIS section easier to understand — pick whichever representation fits (equation steps, forces, graph, bars, labelled parts, a process/cycle, a timeline, particles, a reaction, code, an architecture, a comparison, geometry, a number line, or a keypoint) — see VISUAL spec below. Every section should have one; only omit it if truly nothing would help (rare).
-- "checkpoint": ONE question (mcq/tf/fill/numerical/short) that checks THAT section only.
-- "kind": "concept" for a normal teaching section, or "mistakes" for the ONE section (required) dedicated to common mistakes/misconceptions for this topic.
-Preferred visual types for this subject: ${Visuals.SUBJECT_HINT[t.subjectKind] || Visuals.SUBJECT_HINT.general}
+CHAPTER: ${t.title} (${t.subject}${t.level ? ', ' + t.level : ''})
+CONCEPT IDS (tag each section with the ones it teaches): ${t.concepts.map(c => c.id + '=' + c.name).join('; ')}
+${ctx.weak.length ? 'The learner struggled with: ' + ctx.weak.join(', ') + ' — teach these with extra care.' : ''}${prevHeads ? '\nJust taught before this: ' + prevHeads + ' (do not repeat it).' : ''}
+${what}
+
+HOW TO TEACH (every "explain"):
+- Simple words first, then the precise meaning. Define every hard word in brackets. Say WHY it is true, not just what.
+- Use a tiny everyday Indian example or analogy when it makes the idea click. Solve numericals and worked examples step by step with units.
+- 1-4 sentences per line; never vague, never filler, never repeat the text back without teaching it.
+VISUALS: add a "visual" ONLY when the section has an IMPORTANT process, cycle, structure, labelled part, comparison, graph, force, reaction or geometry that a diagram/flowchart makes much easier. Otherwise null. Never decorate. A flowchart = {"type":"process",...}.
+${numeric ? 'FORMULAS: list EVERY formula, equation, law, unit relation and conversion in this part, even the smallest one.' : 'FORMULAS: list any formula, equation or rule with symbols if present (often none — then []).'}
 Reply ONLY JSON:
-{"sections":[{"level":"Basic|Foundation|Intermediate|Advanced|Mastery","heading":"…","kind":"concept|mistakes","concepts":["c1"],"body":"markdown","example":"markdown","visual":VISUAL or null,"origin":"source|extra","sourceQuote":"exact sentence or empty","checkpoint":Q}],"summary":"3-5 sentence recap"}
+{"sections":[{"heading":"…","level":"Basic|Foundation|Intermediate|Advanced|Mastery","concepts":["c1"],
+ "body":"markdown: the big idea of this section in 2-4 short paragraphs (how it connects, why it matters)",
+ "lines":[{"text":"…","explain":"markdown"}],
+ "terms":[{"term":"","meaning":""}],
+ "formulas":[{"formula":"","symbols":[{"sym":"","meaning":""}],"unit":"","whenToUse":""}],
+ "visual":VISUAL or null,
+ "example":"markdown: one fully solved example / real-life application (or empty)",
+ "keyPoints":["3-6 must-remember exam points"],
+ "checkpoint":Q}]}
 VISUAL = ${Visuals.SPEC_SHORT}
 Q format: ${Quiz.SCHEMA}`;
-    const r = await AI.json(prompt, { tier:'default', peek });
-    const secs = (r && r.sections || []).filter(s => s && s.body).slice(0, 10);
-    if(secs.length < 3) throw Object.assign(new Error('The lesson came back too short and failed the quality check. Try again.'), { code:'qc' });
-    const lesson = { sections: [], summary: String(r.summary || '') };
-    const batch = [];
-    secs.forEach(s => {
-      const cp = s.checkpoint ? Quiz.validate(s.checkpoint, t, batch) : null; if(cp) batch.push(cp);
-      const sec = { level: s.level || '', kind: s.kind === 'mistakes' ? 'mistakes' : 'concept', heading: String(s.heading || '').slice(0, 90), concepts: Array.isArray(s.concepts) ? s.concepts : [], body: String(s.body), example: String(s.example || ''), visual: (s.visual && Visuals.valid(s.visual)) ? s.visual : null, origin: t.source ? (s.origin === 'source' ? 'source' : 'extra') : 'extra', sourceQuote: String(s.sourceQuote || ''), checkpoint: cp };
-      if(t.source && sec.origin === 'source'){ sec.verified = Source.verify(sec.sourceQuote, t.source.text); if(!sec.verified) sec.origin = 'unverified'; }
-      lesson.sections.push(sec);
-    });
-    t.lesson = lesson; t.lesson.qc = qcLesson(t);
+  }
+
+  function normSection(t, s, unitIdx, j, batch){
+    const cp = s.checkpoint ? Quiz.validate(s.checkpoint, t, batch) : null; if(cp) batch.push(cp);
+    const lines = (Array.isArray(s.lines) ? s.lines : []).filter(l => l && (l.text || l.explain)).map(l => ({ text: String(l.text || '').slice(0, 900), explain: String(l.explain || '').slice(0, 2500) })).slice(0, 60);
+    const sec = {
+      id: `u${unitIdx}s${j}`, unit: unitIdx, level: String(s.level || ''), kind: 'concept',
+      heading: String(s.heading || '').slice(0, 100), concepts: Array.isArray(s.concepts) ? s.concepts.map(String) : [],
+      body: String(s.body || ''), lines, example: String(s.example || ''),
+      terms: (Array.isArray(s.terms) ? s.terms : []).filter(d => d && d.term).map(d => ({ term: String(d.term).slice(0, 80), meaning: String(d.meaning || '').slice(0, 400) })).slice(0, 12),
+      formulas: (Array.isArray(s.formulas) ? s.formulas : []).filter(f => f && f.formula).map(f => ({ formula: String(f.formula).slice(0, 200), symbols: Array.isArray(f.symbols) ? f.symbols.filter(x => x && x.sym).map(x => ({ sym: String(x.sym), meaning: String(x.meaning || '') })).slice(0, 10) : [], unit: String(f.unit || ''), whenToUse: String(f.whenToUse || ''), example: '', mistake: '' })).slice(0, 15),
+      keyPoints: (Array.isArray(s.keyPoints) ? s.keyPoints : []).map(String).slice(0, 8),
+      visual: (s.visual && Visuals.valid(s.visual)) ? s.visual : null,
+      origin: 'extra', sourceQuote: '', checkpoint: cp,
+    };
+    if(t.source){
+      const hit = lines.find(l => l.text && Source.verify(l.text, t.source.text));
+      sec.origin = hit ? 'source' : 'unverified'; sec.verified = !!hit; sec.sourceQuote = hit ? hit.text : '';
+    }
+    return sec;
+  }
+
+  function assembleLesson(t){
+    const lz = t.lesson;
+    const order = s => (s.unit || 0) * 100 + (parseInt(String(s.id || '').split('s').pop(), 10) || 0);
+    lz.sections.sort((a, b) => order(a) - order(b));
+    const all = lz.sections;
+    // the formula bank gets every formula of the chapter, in order, without duplicates
+    const seen = new Set(); lz.formulas = [];
+    all.forEach(s => (s.formulas || []).forEach(f => { const k = M.norm(f.formula).replace(/\s/g, ''); if(k && !seen.has(k)){ seen.add(k); lz.formulas.push(f); } }));
+    lz.summary = all.map(s => s.keyPoints && s.keyPoints[0] ? `- **${s.heading}:** ${s.keyPoints[0]}` : '').filter(Boolean).join('\n');
+  }
+
+  L.teachUnit = async (t, i, ctx) => {
+    const lz = t.lesson; const u = lz.units[i];
+    u.status = 'busy'; L.lessonTick(t);
+    let lastErr;
+    for(let attempt = 0; attempt < 2; attempt++){
+      try {
+        const r = await AI.json(unitPrompt(t, u, i, lz.units, ctx), { tier:'default' });
+        const secs = (r && Array.isArray(r.sections) ? r.sections : []).filter(s => s && (s.body || (s.lines && s.lines.length)));
+        if(!secs.length) throw Object.assign(new Error('This part came back empty.'), { code:'qc' });
+        const batch = lz.sections.map(s => s.checkpoint).filter(Boolean);
+        const tt = Store.topic(t.id) || t;   // the learner may have navigated; keep writing to the live object
+        tt.lesson.sections = tt.lesson.sections.filter(x => x.unit !== i).concat(secs.slice(0, 4).map((s, j) => normSection(tt, s, i, j, batch)));
+        tt.lesson.units[i].status = 'done'; delete tt.lesson.units[i].error;
+        assembleLesson(tt); Store.saveTopic(tt); L.lessonTick(tt, i);
+        return;
+      } catch(e){ lastErr = e; if(e && e.code === 'cancelled') break; }
+    }
+    u.status = 'error'; u.error = (lastErr && lastErr.message) || 'Failed'; Store.saveTopic(t); L.lessonTick(t, i);
+  };
+
+  L.buildLesson = (t) => L.task('lesson-' + t.id, async () => {
+    if(t.builtin){ const pk = Pack[t.builtin]; t.lesson = { v: 2, units: [{ title: t.title, status: 'done' }], sections: pk.sections.map((s, j) => ({ ...s, id: 'u0s' + j, unit: 0, origin:'extra', checkpoint: Quiz.validate(s.checkpoint, t) })), summary:'', qc: null }; t.lesson.qc = qcLesson(t); Store.saveTopic(t); return; }
+    const d = t.diagnostic || {}; const res = d.result || {};
+    const ctx = { weak: (res.weak || []).map(id => Mastery.conceptName(t, id)) };
+    let units;
+    if(t.source) units = splitUnits(t.source.text).map(u => ({ title: u.title, text: u.text, status: 'wait' }));
+    else {
+      const outline = Array.isArray(t.outline) && t.outline.length >= 2 ? t.outline : t.concepts.map(c => ({ title: c.name, covers: [] }));
+      units = outline.slice(0, 16).map(u => ({ title: String(u.title || u).slice(0, 100), covers: Array.isArray(u.covers) ? u.covers.map(String).slice(0, 10) : [], status: 'wait' }));
+    }
+    if(!units.length) throw Object.assign(new Error('There was nothing to teach in this chapter. Try a different PDF chapter.'), { code:'qc' });
+    t.lesson = { v: 2, units, sections: [], summary: '', formulas: [], building: true, startedAt: Date.now() };
     Store.saveTopic(t);
+    await pool(units.map((_, i) => i), CONCURRENCY, i => L.teachUnit(t, i, ctx));
+    const tt = Store.topic(t.id) || t;
+    tt.lesson.building = false;
+    if(!tt.lesson.sections.length) { tt.lesson = null; Store.saveTopic(tt); throw Object.assign(new Error('The AI teacher could not prepare this chapter right now. Try again in a minute.'), { code:'qc' }); }
+    tt.lesson.qc = qcLesson(tt);
+    if(tt.lesson.formulas.length) saveFormulasToBank(tt, tt.lesson.formulas);
+    Store.saveTopic(tt);
   });
- 
+
+  L.retryUnit = (t, i) => {
+    const k = 'unit-' + t.id + '-' + i;
+    const res = (t.diagnostic && t.diagnostic.result) || {};
+    return L.task(k, async () => {
+      await L.teachUnit(t, i, { weak: (res.weak || []).map(id => Mastery.conceptName(t, id)) });
+      const tt = Store.topic(t.id); if(!tt || !tt.lesson) return;
+      if(!tt.lesson.units.some(u => u.status !== 'done' && u.status !== 'error')){ tt.lesson.building = false; tt.lesson.qc = qcLesson(tt); if(tt.lesson.formulas.length) saveFormulasToBank(tt, tt.lesson.formulas); Store.saveTopic(tt); }
+    });
+  };
+
+  /* Live update while parts arrive: swap in only the part that changed, so whatever the learner is
+     reading or typing elsewhere on the page is never disturbed. */
+  L.lessonTick = (t, i) => {
+    const bar = document.getElementById('lessonBuild-' + t.id);
+    if(bar) bar.outerHTML = buildBarHTML(t);
+    if(i !== undefined){ const el = document.getElementById(`ml-unit-${t.id}-${i}`); if(el) el.outerHTML = unitHTML(t, i); }
+    L.updateCp(t);
+  };
+
   function qcLesson(t){
     const secs = t.lesson.sections;
     const covered = new Set(); secs.forEach(s => (s.concepts || []).forEach(c => covered.add(c)));
@@ -322,7 +457,7 @@ Reply ONLY JSON {"score":0-1 (0.7+ = could genuinely teach it),"accuracy":"short
 ${AI.learner(t)}
 TOPIC: ${t.title} (${t.subject}${t.level ? ', ' + t.level : ''})
 CONCEPTS: ${t.concepts.map(c => c.name).join('; ')}
-${t.lesson ? 'FULL LESSON (build the notes from this — every section, example and diagram idea):\n' + t.lesson.sections.map(s => `### ${s.heading}\n${s.body}\n${s.example ? 'Example: ' + s.example : ''}`).join('\n\n') : ''}
+${t.lesson ? 'FULL CHAPTER AS TAUGHT (build the notes from ALL of it, in this order — nothing important may be missing):\n' + lessonDigest(t, 60000) : ''}
 ${t.source ? 'SOURCE (authoritative for source-specific facts): ' + t.source.text.slice(0, 16000) : ''}
 THIS LEARNER'S OWN MISTAKES SO FAR: ${myMistakes || 'none recorded'}
 ${numeric ? 'This is a numerical subject: extract every relevant FORMULA the learner needs for this topic.' : 'This is not a strongly numerical subject: leave "formulas" empty and put the equivalent high-value facts in "keyFacts" instead.'}
@@ -351,7 +486,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
       importantQuestions: (r.importantQuestions || []).map(String).slice(0, 6),
       memoryAids: (r.memoryAids || []).map(String).slice(0, 4),
       keyFacts: (r.keyFacts || []).map(String).slice(0, 8),
-      formulas: numeric ? (r.formulas || []).filter(f => f && f.formula).map(f => ({ formula: String(f.formula), symbols: Array.isArray(f.symbols) ? f.symbols.map(s => ({ sym: String(s.sym || ''), meaning: String(s.meaning || '') })).slice(0, 8) : [], unit: String(f.unit || ''), whenToUse: String(f.whenToUse || ''), example: String(f.example || ''), mistake: String(f.mistake || '') })).slice(0, 10) : [],
+      formulas: mergeFormulas((t.lesson && t.lesson.formulas) || [], numeric ? (r.formulas || []) : []).length ? mergeFormulas((t.lesson && t.lesson.formulas) || [], numeric ? (r.formulas || []) : []) : numeric ? (r.formulas || []).filter(f => f && f.formula).map(f => ({ formula: String(f.formula), symbols: Array.isArray(f.symbols) ? f.symbols.map(s => ({ sym: String(s.sym || ''), meaning: String(s.meaning || '') })).slice(0, 8) : [], unit: String(f.unit || ''), whenToUse: String(f.whenToUse || ''), example: String(f.example || ''), mistake: String(f.mistake || '') })).slice(0, 10) : [],
       checklist: (r.checklist || []).map(String).slice(0, 12),
     };
     t.masterNotes = notes;
@@ -359,6 +494,67 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     saveMasterNotesText(t); Store.saveTopic(t);
   });
  
+  /* A compact but complete digest of the taught chapter, for notes / revision prompts. */
+  function lessonDigest(t, max){
+    const out = t.lesson.sections.map(s => [`### ${s.heading}`, s.keyPoints && s.keyPoints.length ? s.keyPoints.map(x => '- ' + x).join('\n') : String(s.body || '').slice(0, 500),
+      s.terms && s.terms.length ? 'Terms: ' + s.terms.map(d => d.term + ' = ' + d.meaning).join('; ') : '',
+      s.formulas && s.formulas.length ? 'Formulas: ' + s.formulas.map(f => f.formula).join('; ') : '',
+      s.lines && s.lines.length ? 'Covers: ' + s.lines.map(l => String(l.text || '').slice(0, 90)).join(' / ') : ''].filter(Boolean).join('\n')).join('\n\n');
+    return out.slice(0, max);
+  }
+  L.lessonDigest = lessonDigest;
+  function mergeFormulas(a, b){
+    const seen = new Set(); const out = [];
+    [...a, ...b].forEach(f => { if(!f || !f.formula) return; const k = M.norm(f.formula).replace(/\s/g, ''); if(!k || seen.has(k)) return; seen.add(k);
+      out.push({ formula: String(f.formula), symbols: Array.isArray(f.symbols) ? f.symbols.map(x => ({ sym: String(x.sym || ''), meaning: String(x.meaning || '') })).slice(0, 10) : [], unit: String(f.unit || ''), whenToUse: String(f.whenToUse || ''), example: String(f.example || ''), mistake: String(f.mistake || '') }); });
+    return out.slice(0, 80);
+  }
+
+  /* ================= Chapter complete → revision + important questions + notes emailed ================= */
+  L.chapterComplete = (t) => {
+    if(!AI.ready()) return;
+    if(!t.revision && !L.inflight['revision-' + t.id]) L.buildRevision(t);
+    const notesP = t.masterNotes ? Promise.resolve() : L.buildMasterNotes(t);
+    Promise.all([notesP, L.inflight['revision-' + t.id] || Promise.resolve()]).then(() => {
+      const tt = Store.topic(t.id); if(tt && tt.masterNotes && !tt.chapterEmail) L.emailChapter(tt, true);
+    }, () => {});
+  };
+
+  L.buildRevision = (t) => L.task('revision-' + t.id, async () => {
+    const numeric = ['maths','physics','chemistry'].includes(t.subjectKind);
+    const r = await AI.json(`The learner has just finished studying this whole chapter. Act as the best exam teacher in India and prepare them to TOP the class.
+${AI.learner(t)}
+CHAPTER: ${t.title} (${t.subject}${t.level ? ', ' + t.level : ''})
+${t.lesson ? 'WHAT WAS TAUGHT (complete):\n' + lessonDigest(t, 45000) : ''}
+${t.source ? 'BOOK TEXT SAMPLE (authoritative): ' + t.source.text.slice(0, 12000) : ''}
+Reply ONLY JSON:
+{"revision":["15-30 crisp revision points covering the WHOLE chapter in order — every definition, law, fact, formula, process and exception a topper must remember"],
+ "flow":["5-8 step flowchart of how the chapter's ideas connect, in order"] or [],
+ "questions":[22-30 MOST IMPORTANT exam questions for this chapter, the ones most likely to come in school/board exams, covering every part of the chapter:
+   {"type":"1 mark|2 marks|3 marks|5 marks|HOTS|Case based|Assertion-Reason${numeric ? '|Numerical' : ''}","q":"the question","answer":"markdown: the full model answer a topper would write (steps + units for numericals)","why":"one line: why this is important"}],
+ "traps":["5-8 common mistakes / tricky points examiners use for this chapter"]}`, { tier:'default' });
+    const qs = (r && Array.isArray(r.questions) ? r.questions : []).filter(q => q && q.q && q.answer).map((q, i) => ({ id: 'iq' + i, type: String(q.type || 'Question').slice(0, 30), q: String(q.q), answer: String(q.answer), why: String(q.why || '') })).slice(0, 40);
+    if(qs.length < 5) throw Object.assign(new Error('The important questions came back incomplete. Try again.'), { code:'qc' });
+    const tt = Store.topic(t.id) || t;
+    tt.revision = { points: (r.revision || []).map(String).slice(0, 40), flow: (r.flow || []).map(String).slice(0, 10), traps: (r.traps || []).map(String).slice(0, 10), questions: qs, at: Date.now(), seen: {} };
+    Store.saveTopic(tt);
+  });
+
+  L.emailChapter = async (t, auto, btn) => {
+    const to = Store.state.profile.email || (window.Auth && Auth.user && Auth.user.email) || '';
+    if(!to){ if(!auto) M.toast('Add your email in Settings first.'); t.chapterEmail = { error: 'no_email', at: Date.now() }; Store.saveTopic(t); M.render(); return; }
+    if(btn){ btn.disabled = true; btn.textContent = 'Sending…'; }
+    try {
+      await Email.sendChapterPack(t, to);
+      t.chapterEmail = { to, at: Date.now() }; Store.saveTopic(t);
+      M.toast('📧 Notes + all formulas sent to ' + to, 4000);
+    } catch(e){
+      t.chapterEmail = { error: e.message, at: Date.now() }; Store.saveTopic(t);
+      if(!auto) M.toast(e.message, 5000);
+    }
+    if(M.current.name === 'topic' && M.current.param === t.id) M.render();
+  };
+
   function saveFormulasToBank(t, formulas){
     if(!formulas || !formulas.length) return;
     const bank = Store.state.formulas;
@@ -445,13 +641,14 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
         ${partsHTML(t)}
       </div>
       ${t.planned ? loopHTML(t) : ''}
-      ${t.planned ? `<div class="chips" role="tablist">${[['study','Study'],['lesson','Lesson'],['proof','Mastery proof'],['master','Master Notes'],['sheet','One-Page Revision'],['formulas','Formula Bank'],['notes','My Notes']].map(([k, l]) => `<button class="chip ${tab === k ? 'on' : ''}" role="tab" aria-selected="${tab === k}" data-action="topic-tab" data-tid="${t.id}" data-tab="${k}">${l}</button>`).join('')}</div>` : ''}
+      ${t.planned ? `<div class="chips" role="tablist">${[['study','Study'],['lesson','Lesson'],['revise','Revision & Imp. Qs'],['proof','Mastery proof'],['master','Master Notes'],['sheet','One-Page Revision'],['formulas','Formula Bank'],['notes','My Notes']].map(([k, l]) => `<button class="chip ${tab === k ? 'on' : ''}" role="tab" aria-selected="${tab === k}" data-action="topic-tab" data-tid="${t.id}" data-tab="${k}">${l}</button>`).join('')}</div>` : ''}
       <div id="topicBody"></div>
     </div>`;
     const body = view.querySelector('#topicBody');
     if(!t.planned){ body.innerHTML = planHTML(t); return; }
     if(tab === 'lesson') renderLesson(body, t, false);
     else if(tab === 'proof') body.innerHTML = proofHTML(t);
+    else if(tab === 'revise') body.innerHTML = reviseHTML(t);
     else if(tab === 'master') body.innerHTML = masterNotesHTML(t);
     else if(tab === 'sheet') body.innerHTML = sheetHTML(t);
     else if(tab === 'formulas') body.innerHTML = topicFormulasHTML(t);
@@ -610,33 +807,88 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
   }
  
   /* ---------- lesson (teacher + reading) ---------- */
+  const lessonUnits = t => (t.lesson && Array.isArray(t.lesson.units) && t.lesson.units.length) ? t.lesson.units : [{ title: t.title, status: 'done' }];
+  const unitSecs = (t, i) => !t.lesson.units ? t.lesson.sections : t.lesson.sections.filter(s => (s.unit || 0) === i);
+  function buildBarHTML(t){
+    const us = lessonUnits(t); const done = us.filter(u => u.status === 'done').length; const errs = us.filter(u => u.status === 'error').length;
+    const building = t.lesson && t.lesson.building && L.inflight['lesson-' + t.id];
+    if(!building && done === us.length) return `<div id="lessonBuild-${t.id}" hidden></div>`;
+    return `<div id="lessonBuild-${t.id}" class="card soft build-bar"><div class="row-between"><b>${building ? `Your teacher is preparing the chapter… ${done}/${us.length} parts ready` : `${done}/${us.length} parts ready`}</b>${building ? '<span class="mini-spin"></span>' : ''}</div><div class="score-bar"><i style="width:${us.length ? done / us.length * 100 : 0}%"></i></div><div class="hint">${building ? 'Start reading now — the next parts appear below automatically, in order.' : errs ? 'Some parts could not be prepared. Tap “Teach this part” on them to try again.' : ''}</div></div>`;
+  }
+  function unitHTML(t, i){
+    const u = lessonUnits(t)[i]; const secs = unitSecs(t, i);
+    if(u.status === 'done' || secs.length) return `<div id="ml-unit-${t.id}-${i}" class="stack">${secs.map(sec => sectionHTML(t, sec)).join('')}</div>`;
+    if(u.status === 'error' && !L.inflight['unit-' + t.id + '-' + i]) return `<div id="ml-unit-${t.id}-${i}" class="card lesson-sec">${M.errorHTML(`Part ${i + 1} (${u.title}) could not be prepared: ${u.error || 'network problem'}`, 'retry-unit', 'Teach this part', `data-tid="${t.id}" data-i="${i}"`)}</div>`;
+    return `<div id="ml-unit-${t.id}-${i}" class="card lesson-sec skeleton"><div class="row"><span class="ml-num">${String(i + 1).padStart(2, '0')}</span><b>${M.esc(u.title)}</b></div>${M.loadingHTML(u.status === 'busy' || L.inflight['unit-' + t.id + '-' + i] ? 'Teaching this part line by line…' : 'Waiting its turn…')}</div>`;
+  }
+  function sectionHTML(t, sec){
+    const cp = sec.checkpoint; const done = cp && t.lessonProgress.checkpoints[cp.id] !== undefined;
+    const isMistake = sec.kind === 'mistakes';
+    const idx = t.lesson.sections.indexOf(sec);
+    return `<section id="ml-sec-${t.id}-${sec.id || idx}" class="card lesson-sec ${isMistake ? 'ml-mistake' : ''}">
+      <div class="row-between"><div class="row"><span class="ml-num">${String(idx + 1).padStart(2, '0')}</span>${sec.level ? `<span class="level-tag">${M.esc(sec.level)}</span>` : ''}${isMistake ? '<span class="tag warn">' + M.icon.alert + ' Common mistake</span>' : ''}</div>${t.source ? (sec.origin === 'source' ? '<span class="tag src">From your book ✓</span>' : sec.origin === 'unverified' ? '<span class="tag warn">Extra explanation</span>' : '<span class="tag extra">Extra explanation</span>') : ''}</div>
+      <h3>${M.esc(sec.heading)}</h3>
+      ${sec.body ? `<div class="prose">${M.md(sec.body)}</div>` : ''}
+      ${sec.lines && sec.lines.length ? `<div class="lines"><div class="eyebrow">${t.source ? 'Line by line from your book' : 'Step by step'}</div>${sec.lines.map((l, k) => `<div class="ln">${l.text ? `<div class="ln-src"><span class="ln-n">${k + 1}</span><span>${M.esc(l.text)}</span></div>` : ''}${l.explain ? `<div class="ln-exp prose">${M.md(l.explain)}</div>` : ''}</div>`).join('')}</div>` : ''}
+      ${sec.visual ? `<div class="ml-visual">${Visuals.render(sec.visual, { light: true })}</div>` : ''}
+      ${sec.terms && sec.terms.length ? `<div class="terms"><div class="eyebrow">Key terms</div><dl>${sec.terms.map(d => `<div><dt>${M.esc(d.term)}</dt><dd>${M.esc(d.meaning)}</dd></div>`).join('')}</dl></div>` : ''}
+      ${sec.formulas && sec.formulas.length ? `<div class="stack-sm"><div class="eyebrow">Formulas in this part</div>${sec.formulas.map(formulaCardHTML).join('')}</div>` : ''}
+      ${sec.example ? `<div class="example"><div class="eyebrow">Solved example</div><div class="prose">${M.md(sec.example)}</div></div>` : ''}
+      ${sec.keyPoints && sec.keyPoints.length ? `<div class="keypoints"><div class="eyebrow">${M.icon.flag} Remember for the exam</div><ul>${sec.keyPoints.map(x => `<li>${M.md(x).replace(/^<p>|<\/p>$/g, '')}</li>`).join('')}</ul></div>` : ''}
+      ${cp ? `<div class="card soft" data-cp-wrap="${cp.id}"><div class="eyebrow" style="margin-bottom:8px">Quick check${done ? (t.lessonProgress.checkpoints[cp.id] ? ' · ✓ correct' : ' · answered') : ''}</div>${done ? Quiz.stemHTML(cp) : Quiz.render(cp)}${done ? `<div class="small muted" style="margin-top:8px"><b>Answer:</b> ${M.esc(Quiz.answerText(cp))}. ${M.esc(cp.explanation || '')}</div>` : `<div style="margin-top:10px"><button class="btn sm primary" data-action="cp-check" data-tid="${t.id}" data-sid="${sec.id || ''}" data-sec="${idx}">Check</button></div>`}</div>` : ''}
+    </section>`;
+  }
+
   function renderLesson(body, t, inStudy){
     const k = 'lesson-' + t.id;
     if(!t.lesson && !L.inflight[k] && !L.errors[k]) L.buildLesson(t);
-    if(L.inflight[k] || (!t.lesson && !L.errors[k])){ body.insertAdjacentHTML('beforeend', stageCard('book', 'Your lesson', '', M.loadingHTML('Building your lesson…', 'Basic → Mastery, personalised from your check. About 30–60 seconds.'))); return; }
-    if(!t.lesson){ body.insertAdjacentHTML('beforeend', stageCard('book', 'Your lesson', '', M.errorHTML(L.errors[k].message, 'retry-lesson', 'Try again', `data-tid="${t.id}"`))); return; }
+    // an interrupted build (app closed mid-way): carry on with the parts that are missing
+    if(t.lesson && t.lesson.building && !L.inflight[k]) resumeBuild(t);
+    if(!t.lesson){
+      if(L.errors[k]) body.insertAdjacentHTML('beforeend', stageCard('book', 'Your lesson', '', M.errorHTML(L.errors[k].message, 'retry-lesson', 'Try again', `data-tid="${t.id}"`)));
+      else body.insertAdjacentHTML('beforeend', stageCard('book', 'Your lesson', '', M.loadingHTML('Your teacher is opening the chapter…', 'The first part appears in about 30 seconds — the rest keeps arriving while you read.')));
+      return;
+    }
     const mode = L.readMode[t.id] || 'read';
     const d = t.diagnostic && t.diagnostic.result;
     const qc = t.lesson.qc;
     let html = '';
-    if(inStudy && d) html += `<div class="notice small">${M.icon.info}<div>Starting point: ${d.right}/${d.n} on the check.${d.weak.length ? ' Extra care on: ' + d.weak.map(id => M.esc(Mastery.conceptName(t, id))).join(', ') + '.' : ''}${d.known.length ? ' Kept brief: ' + d.known.map(id => M.esc(Mastery.conceptName(t, id))).join(', ') + '.' : ''}</div></div>`;
-    html += `<div class="chips"><button class="chip ${mode === 'read' ? 'on' : ''}" data-action="lesson-mode" data-tid="${t.id}" data-mode="read">${M.icon.book} Master Lesson</button><button class="chip ${mode === 'teacher' ? 'on' : ''}" data-action="lesson-mode" data-tid="${t.id}" data-mode="teacher">${M.icon.teacher} Video lesson (optional)</button></div>`;
-    if(qc) html += `<div class="qc">${qcChip(qc.concepts[0] === qc.concepts[1], `${qc.concepts[0]}/${qc.concepts[1]} concepts covered`)}${qcChip(qc.levels >= 3, `${qc.levels} levels`)}${qcChip(qc.checkpoints[0] >= Math.min(3, qc.checkpoints[1]), `${qc.checkpoints[0]} checkpoints`)}${qc.quotes ? qcChip(qc.quotes[0] === qc.quotes[1], `${qc.quotes[0]}/${qc.quotes[1]} source quotes verified`) : ''}${qc.missing && qc.missing.length ? `<span class="tag warn">Not covered: ${M.esc(qc.missing.join(', '))}. Ask the Coach</span>` : ''}</div>`;
+    if(inStudy && d && d.n) html += `<div class="notice small">${M.icon.info}<div>Starting point: ${d.right}/${d.n} on the check.${d.weak.length ? ' Extra care on: ' + d.weak.map(id => M.esc(Mastery.conceptName(t, id))).join(', ') + '.' : ''}</div></div>`;
+    html += `<div class="chips"><button class="chip ${mode === 'read' ? 'on' : ''}" data-action="lesson-mode" data-tid="${t.id}" data-mode="read">${M.icon.book} Full chapter lesson</button><button class="chip ${mode === 'teacher' ? 'on' : ''}" data-action="lesson-mode" data-tid="${t.id}" data-mode="teacher">${M.icon.teacher} Video lesson (optional)</button></div>`;
+    if(qc && !t.lesson.building) html += `<div class="qc">${qcChip(qc.concepts[0] === qc.concepts[1], `${qc.concepts[0]}/${qc.concepts[1]} concepts covered`)}${qcChip(true, `${t.lesson.sections.length} sections`)}${t.lesson.formulas && t.lesson.formulas.length ? qcChip(true, `${t.lesson.formulas.length} formulas`) : ''}${qc.quotes ? qcChip(qc.quotes[0] >= qc.quotes[1] * 0.7, `${qc.quotes[0]}/${qc.quotes[1]} parts matched to your book`) : ''}</div>`;
     html += `<div id="lessonMain"></div>`;
-    const cps = t.lesson.sections.filter(s => s.checkpoint); const answered = Math.min(cps.length, Object.keys(t.lessonProgress.checkpoints).length);
-    if(!t.lessonProgress.done) html += `<div class="card soft stack-sm"><div class="row-between"><b id="cpCount">Lesson checkpoints: ${answered}/${cps.length}</b><span class="tiny muted">Answer them in “Read & check” or during the teacher lesson</span></div><div class="score-bar"><i id="cpBar" style="width:${cps.length ? answered / cps.length * 100 : 100}%"></i></div><button class="btn primary block" id="finishLesson" data-action="finish-lesson" data-tid="${t.id}" ${answered < Math.min(cps.length, Math.ceil(cps.length * 0.6)) ? 'disabled' : ''}>I’ve learned it. Start proving it ${M.icon.arrow}</button><div class="hint">Finishing the lesson doesn’t mean mastery. Next you’ll prove it with practice, a hard test, teach-back and a challenge.</div></div>`;
+    if(!t.lessonProgress.done) html += finishCardHTML(t);
     body.insertAdjacentHTML('beforeend', html);
     const main = body.querySelector('#lessonMain');
-    if(mode === 'teacher') renderTeacher(main, t); else main.innerHTML = readingHTML(t);
+    if(mode === 'teacher'){ if(t.lesson.building) main.innerHTML = `<div class="notice">${M.icon.info}<div>The video lesson can be prepared once the whole chapter is ready. Read the chapter lesson meanwhile.</div></div>`; else renderTeacher(main, t); }
+    else main.innerHTML = readingHTML(t);
+  }
+  function finishCardHTML(t){
+    const cps = t.lesson.sections.filter(s => s.checkpoint); const answered = Math.min(cps.length, Object.keys(t.lessonProgress.checkpoints).length);
+    const need = Math.min(cps.length, Math.ceil(cps.length * 0.4));
+    return `<div class="card soft stack-sm" id="finishCard-${t.id}"><div class="row-between"><b id="cpCount">Quick checks answered: ${answered}/${cps.length}</b><span class="tiny muted">${t.lesson.building ? 'More parts are still arriving' : ''}</span></div><div class="score-bar"><i id="cpBar" style="width:${cps.length ? answered / cps.length * 100 : 100}%"></i></div><button class="btn primary block" id="finishLesson" data-action="finish-lesson" data-tid="${t.id}" ${t.lesson.building || answered < need ? 'disabled' : ''}>Chapter complete → Revision, Important Questions &amp; Notes ${M.icon.arrow}</button><div class="hint">When you finish, you get a full revision, the most important exam questions with answers, and your chapter notes + every formula are emailed to you.</div></div>`;
+  }
+  function resumeBuild(t){
+    const res = (t.diagnostic && t.diagnostic.result) || {};
+    L.task('lesson-' + t.id, async () => {
+      const ctx = { weak: (res.weak || []).map(id => Mastery.conceptName(t, id)) };
+      const todo = t.lesson.units.map((u, i) => i).filter(i => t.lesson.units[i].status !== 'done');
+      await pool(todo, CONCURRENCY, i => L.teachUnit(t, i, ctx));
+      const tt = Store.topic(t.id) || t; tt.lesson.building = false; tt.lesson.qc = qcLesson(tt);
+      if(tt.lesson.formulas && tt.lesson.formulas.length) saveFormulasToBank(tt, tt.lesson.formulas);
+      Store.saveTopic(tt);
+    });
   }
   L.updateCp = (t) => {
+    if(!t.lesson) return;
     const cps = t.lesson.sections.filter(s => s.checkpoint); const answered = Math.min(cps.length, Object.keys(t.lessonProgress.checkpoints).length);
+    const need = Math.min(cps.length, Math.ceil(cps.length * 0.4));
     const c = document.getElementById('cpCount'), b = document.getElementById('cpBar'), f = document.getElementById('finishLesson');
-    if(c) c.textContent = `Lesson checkpoints: ${answered}/${cps.length}`; if(b) b.style.width = (cps.length ? answered / cps.length * 100 : 100) + '%';
-    if(f) f.disabled = answered < Math.min(cps.length, Math.ceil(cps.length * 0.6));
+    if(c) c.textContent = `Quick checks answered: ${answered}/${cps.length}`; if(b) b.style.width = (cps.length ? answered / cps.length * 100 : 100) + '%';
+    if(f) f.disabled = !!t.lesson.building || answered < need;
   };
   const qcChip = (ok, text) => `<span class="tag ${ok ? 'ok' : 'warn'}">${ok ? '✓' : '!'} ${M.esc(text)}</span>`;
- 
+
   function renderTeacher(main, t){
     const k = 'scenes-' + t.id;
     if(!t.scenes){
@@ -650,29 +902,47 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
       onFinish(){ M.toast('Lesson finished. Answer any remaining checkpoints, then start proving it.'); },
     });
   }
- 
+
   function readingHTML(t){
-    const secs = t.lesson.sections;
-    const nav = secs.map((s, i) => { const cp = s.checkpoint; const done = cp && t.lessonProgress.checkpoints[cp.id] !== undefined; return `<a class="ml-navdot ${done ? (t.lessonProgress.checkpoints[cp.id] ? 'ok' : 'seen') : ''}" href="#ml-sec-${t.id}-${i}" title="${M.esc(s.heading)}">${String(i + 1).padStart(2, '0')}</a>`; }).join('');
+    const us = lessonUnits(t);
+    const nav = us.map((u, i) => `<a class="ml-navdot ${u.status === 'done' ? 'ok' : ''}" href="#ml-unit-${t.id}-${i}" title="${M.esc(u.title)}" data-action="jump" data-to="ml-unit-${t.id}-${i}">${String(i + 1).padStart(2, '0')}</a>`).join('');
     return `<div class="stack">
-      <div class="ml-nav">${nav}<a class="ml-navdot" href="#ml-sec-${t.id}-recap" title="Recap">✓</a></div>
+      ${buildBarHTML(t)}
+      ${us.length > 1 ? `<details class="fold" open><summary>Chapter map · ${us.length} parts</summary><ol class="chapter-map">${us.map((u, i) => `<li><a href="#" data-action="jump" data-to="ml-unit-${t.id}-${i}">${M.esc(u.title)}</a>${u.status === 'done' ? ' <span class="tag ok">ready</span>' : ''}</li>`).join('')}</ol></details>` : ''}
+      <div class="ml-nav">${nav}<a class="ml-navdot" href="#" data-action="jump" data-to="ml-sec-${t.id}-recap" title="Recap">✓</a></div>
       ${t.overview ? `<div class="card ml-hero"><div class="eyebrow">Big picture</div><div class="prose">${M.md(t.overview)}</div></div>` : ''}
-      ${secs.map((s, i) => {
-        const cp = s.checkpoint; const done = cp && t.lessonProgress.checkpoints[cp.id] !== undefined;
-        const isMistake = s.kind === 'mistakes';
-        return `<section id="ml-sec-${t.id}-${i}" class="card lesson-sec ${isMistake ? 'ml-mistake' : ''}">
-          <div class="row-between"><div class="row"><span class="ml-num">${String(i + 1).padStart(2, '0')}</span><span class="level-tag">${M.esc(s.level)}</span>${isMistake ? '<span class="tag warn">' + M.icon.alert + ' Common mistake</span>' : ''}</div>${t.source ? (s.origin === 'source' ? '<span class="tag src">Source content</span>' : s.origin === 'unverified' ? '<span class="tag warn">Not found in source: extra</span>' : '<span class="tag extra">Extra explanation</span>') : ''}</div>
-          <h3>${M.esc(s.heading)}</h3>
-          ${s.origin === 'source' && s.sourceQuote ? `<div class="src-quote">“${M.esc(s.sourceQuote)}” <span class="tag ok">✓ verified in your source</span></div>` : ''}
-          <div class="prose">${M.md(s.body)}</div>
-          ${s.visual ? `<div class="ml-visual">${Visuals.render(s.visual, { light: true })}</div>` : ''}
-          ${s.example ? `<div class="example"><div class="eyebrow">Example</div><div class="prose">${M.md(s.example)}</div></div>` : ''}
-          ${cp ? `<div class="card soft" data-cp-wrap="${cp.id}"><div class="eyebrow" style="margin-bottom:8px">Quick check${done ? (t.lessonProgress.checkpoints[cp.id] ? ' · ✓ correct' : ' · answered') : ''}</div>${done ? Quiz.stemHTML(cp) : Quiz.render(cp)}${done ? `<div class="small muted" style="margin-top:8px"><b>Answer:</b> ${M.esc(Quiz.answerText(cp))}. ${M.esc(cp.explanation || '')}</div>` : `<div style="margin-top:10px"><button class="btn sm primary" data-action="cp-check" data-tid="${t.id}" data-sec="${i}">Check</button></div>`}</div>` : ''}
-        </section>`; }).join('')}
-      ${t.lesson.summary ? `<section id="ml-sec-${t.id}-recap" class="card lesson-sec"><div class="eyebrow">Recap</div><div class="prose">${M.md(t.lesson.summary)}</div></section>` : ''}
+      ${us.map((u, i) => unitHTML(t, i)).join('')}
+      ${t.lesson.summary && !t.lesson.building ? `<section id="ml-sec-${t.id}-recap" class="card lesson-sec"><div class="eyebrow">Chapter recap</div><div class="prose">${M.md(t.lesson.summary)}</div></section>` : `<div id="ml-sec-${t.id}-recap"></div>`}
     </div>`;
   }
- 
+
+  function reviseHTML(t){
+    if(!t.lessonProgress.done) return `<div class="card">${M.emptyHTML('repeat', 'Finish the chapter lesson first.<br>Then you get a full revision, the most important exam questions with model answers, and your notes + all formulas by email.', `<button class="btn primary" data-action="topic-tab" data-tid="${t.id}" data-tab="lesson">Go to the lesson</button>`)}</div>`;
+    const k = 'revision-' + t.id;
+    let html = '<div class="stack">';
+    // email status
+    const em = t.chapterEmail; const nk = 'notes-' + t.id;
+    html += `<div class="card row-between email-card"><div class="stack-sm"><b>${M.icon.book} Chapter notes + every formula</b><span class="small muted">${L.inflight[nk] ? 'Writing your complete notes…' : em && em.to ? `Sent to ${M.esc(em.to)} on ${M.fmtDate(em.at)} ✓` : em && em.error ? M.esc(em.error === 'no_email' ? 'Add your email in Settings to receive them.' : em.error) : t.masterNotes ? 'Ready to send.' : 'Being prepared.'}</span></div><div class="row">${t.masterNotes ? `<button class="btn sm" data-action="topic-tab" data-tid="${t.id}" data-tab="master">Open notes</button><button class="btn sm primary" data-action="email-chapter" data-tid="${t.id}">${em && em.to ? 'Send again' : 'Email me'}</button>` : L.inflight[nk] ? '<span class="mini-spin"></span>' : `<button class="btn sm primary" data-action="build-notes" data-tid="${t.id}">Create notes</button>`}</div></div>`;
+    if(L.inflight[k] || (!t.revision && !L.errors[k] && AI.ready() && (L.buildRevision(t), true))) return html + `<div class="card">${M.loadingHTML('Preparing your revision and the most important exam questions…', 'Every part of the chapter, with model answers a topper would write.')}</div></div>`;
+    if(!t.revision) return html + `<div class="card">${L.errors[k] ? M.errorHTML(L.errors[k].message, 'retry-revision', 'Try again', `data-tid="${t.id}"`) : M.emptyHTML('repeat', 'The AI teacher is offline right now. Try again in a minute.')}</div></div>`;
+    const rv = t.revision;
+    html += `<div class="card stack"><div><div class="eyebrow">Full chapter revision</div><h2>${M.esc(t.title)}: everything to remember</h2></div>
+      ${rv.flow.length >= 3 ? `<div class="ml-visual" style="overflow-x:auto">${M.flowSVG(rv.flow, { vertical: rv.flow.length > 4 })}</div>` : ''}
+      <ol class="rev-points">${rv.points.map(x => `<li>${M.md(x).replace(/^<p>|<\/p>$/g, '')}</li>`).join('')}</ol>
+      ${rv.traps.length ? `<div class="notice warn">${M.icon.alert}<div><b>Exam traps</b><ul>${rv.traps.map(x => `<li>${M.esc(x)}</li>`).join('')}</ul></div></div>` : ''}</div>`;
+    const types = [...new Set(rv.questions.map(q => q.type))];
+    html += `<div class="card stack"><div class="row-between"><div><div class="eyebrow">Most important questions</div><h2>${rv.questions.length} questions that matter</h2></div><span class="tag">${Object.keys(rv.seen || {}).length}/${rv.questions.length} done</span></div>
+      <p class="small muted">Try each one yourself first (say it or write it), then reveal the model answer.</p>
+      ${types.map(ty => `<div class="stack-sm"><h3 class="iq-type">${M.esc(ty)}</h3>${rv.questions.filter(q => q.type === ty).map(q => `<details class="iq ${rv.seen && rv.seen[q.id] ? 'seen' : ''}" data-iq="${q.id}" data-tid="${t.id}"><summary><span class="iq-q">${M.md(q.q).replace(/^<p>|<\/p>$/g, '')}</span></summary><div class="iq-a prose">${M.md(q.answer)}${q.why ? `<p class="tiny muted">Why important: ${M.esc(q.why)}</p>` : ''}</div></details>`).join('')}</div>`).join('')}
+      <div class="row"><button class="btn primary" data-action="start-stage" data-tid="${t.id}" data-stage="${Mastery.nextStep(t).stage === 'done' ? 'review' : 'practice'}">${M.icon.play} Test myself now</button><button class="btn ghost" data-action="retry-revision" data-tid="${t.id}">New set of questions</button></div></div>`;
+    return html + '</div>';
+  }
+  document.addEventListener('toggle', e => {
+    const d = e.target; if(!d || !d.matches || !d.matches('details.iq') || !d.open) return;
+    const t = Store.topic(d.dataset.tid); if(!t || !t.revision) return;
+    t.revision.seen = t.revision.seen || {}; if(!t.revision.seen[d.dataset.iq]){ t.revision.seen[d.dataset.iq] = Date.now(); d.classList.add('seen'); Store.saveTopic(t); }
+  }, true);
+
   function proofHTML(t){
     const pl = Mastery.percentLabel(t);
     const recent = t.attempts.slice(-12).reverse();
@@ -700,7 +970,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
  
   function masterNotesHTML(t){
     const k = 'notes-' + t.id;
-    if(!t.masteredAt && !t.masterNotes) return `<div class="card">${M.emptyHTML('book', 'Master Notes unlock when you master this topic.<br>A complete, standalone set of notes — someone who never read the lesson could study these alone.')}</div>`;
+    if(!t.masteredAt && !t.masterNotes && !t.lessonProgress.done) return `<div class="card">${M.emptyHTML('book', 'Master Notes unlock when you finish the chapter lesson.<br>A complete, standalone set of notes — someone who never read the lesson could study these alone.')}</div>`;
     if(L.inflight[k]) return `<div class="card">${M.loadingHTML('Writing your Master Notes…', 'Overview, diagrams, worked examples, mistakes, exam points — everything, compressed.')}</div>`;
     if(!t.masterNotes) return `<div class="card">${L.errors[k] ? M.errorHTML(L.errors[k].message, 'build-notes', 'Try again', `data-tid="${t.id}"`) : `<button class="btn primary" data-action="build-notes" data-tid="${t.id}">Create Master Notes</button>`}</div>`;
     const n = t.masterNotes;
@@ -771,7 +1041,7 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
   M.action('finish-diag', el => L.finishDiagnostic(T(el)));
   M.action('skip-diag', el => { const t = T(el); t.diagnostic = t.diagnostic || { questions:[], answers:{} }; t.diagnostic.done = true; t.diagnostic.skipped = true; t.diagnostic.result = { right:0, n:0, known:[], weak:[] }; t.lessonProgress.started = true; Store.saveTopic(t); M.render(); });
   M.action('cp-check', async el => {
-    const t = T(el); const sec = t.lesson.sections[Number(el.dataset.sec)]; const q = sec.checkpoint; const root = el.closest('[data-cp-wrap]');
+    const t = T(el); const sec = (el.dataset.sid && t.lesson.sections.find(x => x.id === el.dataset.sid)) || t.lesson.sections[Number(el.dataset.sec)]; if(!sec || !sec.checkpoint) return; const q = sec.checkpoint; const root = el.closest('[data-cp-wrap]');
     const ans = Quiz.readAnswer(root, q); if(ans === null){ M.toast('Answer the checkpoint first.'); return; }
     el.disabled = true; el.textContent = 'Checking…';
     let r; try { r = await Quiz.grade(q, ans, t); } catch(e){ el.disabled = false; el.textContent = 'Check'; M.toast(e.message); return; }
@@ -780,7 +1050,9 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
     el.parentElement.outerHTML = Quiz.feedbackHTML(q, r, { selfTag:false });
     L.updateCp(t);
   });
-  M.action('finish-lesson', el => { const t = T(el); t.lessonProgress.done = true; t.lessonProgress.doneAt = Date.now(); Store.saveTopic(t); M.render(); });
+  M.action('finish-lesson', el => { const t = T(el); t.lessonProgress.done = true; t.lessonProgress.doneAt = Date.now(); Store.saveTopic(t); L.chapterComplete(t); L.tab[t.id] = 'revise'; M.render(); window.scrollTo(0, 0); });
+  M.action('retry-unit', el => { const t = T(el); const i = Number(el.dataset.i); t.lesson.units[i].status = 'wait'; L.retryUnit(t, i); L.lessonTick(t, i); });
+  M.action('jump', el => { const x = document.getElementById(el.dataset.to); if(x) x.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   M.action('build-scenes', el => { L.buildScenes(T(el)); M.render(); });
   M.action('rebuild-scenes', el => { const t = T(el); if(t.builtin) return M.toast('The built-in lesson has a fixed script.'); t.scenes = null; Store.saveTopic(t); L.buildScenes(t); M.render(); });
   M.action('copy-script', el => { const t = T(el); M.copy(Video.script(t, t.scenes)); });
@@ -795,7 +1067,9 @@ VISUAL = ${Visuals.SPEC_SHORT}`, { tier:'default', peek });
   M.action('award', el => L.award(T(el)));
   M.action('build-sheet', el => { L.buildSheet(T(el)); M.render(); });
   M.action('copy-sheet', el => { const n = Store.state.notes.find(n => n.sheetOf === el.dataset.tid); M.copy(n ? n.title + '\n\n' + n.body : ''); });
-  M.action('build-notes', el => { L.buildMasterNotes(T(el)); M.render(); });
+  M.action('build-notes', el => { const t = T(el); L.buildMasterNotes(t).then(() => { const tt = Store.topic(t.id); if(tt && tt.masterNotes && tt.lessonProgress.done && !(tt.chapterEmail && tt.chapterEmail.to)) L.emailChapter(tt, true); }, () => {}); M.render(); });
+  M.action('email-chapter', el => L.emailChapter(T(el), false, el));
+  M.action('retry-revision', el => { const t = T(el); delete L.errors['revision-' + t.id]; t.revision = null; Store.saveTopic(t); L.buildRevision(t); M.render(); });
   M.action('email-notes', el => Email.sendNotes(T(el), el));
   M.action('email-sheet', el => Email.sendSheet(T(el), el));
   M.action('email-formulas', el => Email.sendFormulas(T(el), el));

@@ -53,6 +53,7 @@
     async _call(input, opts, wantJson){
       if(!this.ready()) throw this._err('offline');
       const body = { input, json: !!wantJson };
+      if(opts.maxTokens) body.maxTokens = opts.maxTokens;
       const imgs = opts.images ? (Array.isArray(opts.images) ? opts.images : [opts.images]) : [];
       if(imgs.length) body.images = await Promise.all(imgs.map(b => this._blobToBase64(b)));
       if(opts.peek){ const el = typeof opts.peek === 'function' ? opts.peek() : opts.peek; if(el) el.textContent = '… thinking'; }

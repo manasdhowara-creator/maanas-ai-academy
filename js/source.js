@@ -96,7 +96,7 @@
     async ocr(book, ch, onProgress = () => {}){
       if(!AI.ready() || !AI.canSeeImages()) throw new Error('This PDF is scanned (only images, no text). Reading scanned pages needs the AI with image support, which isn’t available here. Try a text-based PDF or paste the text instead.');
       const max = Math.min(AI.limits.images.maxCount || 5, 5);
-      const pages = []; for(let p = ch.start; p <= Math.min(ch.end, ch.start + 19); p++) pages.push(p);
+      const pages = []; for(let p = ch.start; p <= Math.min(ch.end, ch.start + 49); p++) pages.push(p);
       let out = '';
       for(let i = 0; i < pages.length; i += max){
         const batch = pages.slice(i, i + max); onProgress(`Reading scanned pages ${batch[0]}–${batch[batch.length - 1]}…`);

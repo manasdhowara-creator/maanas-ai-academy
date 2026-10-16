@@ -127,9 +127,18 @@
     V.book = null; V.bookErr = null; V.bookBusy = 'Reading your source…'; paintBook();
     try {
       const book = await Source.read(file, m => { V.bookBusy = m; paintBook(); });
-      book.structure = Source.chapters(book); V.book = book;
+      book.structure = await smartChapters(book, m => { V.bookBusy = m; paintBook(); }); V.book = book;
     } catch(e){ V.bookErr = e.message; }
     V.bookBusy = null; paintBook();
+  }
+  /* Real chapters, never arbitrary page ranges: table of contents → chapter headings → AI detection. */
+  async function smartChapters(book, onProgress){
+    const st = Source.chapters(book);
+    if(st.method === 'chunks' && AI.ready() && !book.scanned){
+      onProgress && onProgress('Finding the real chapters in your PDF…');
+      try { return await Source.chaptersAI(book); } catch(_){}
+    }
+    return st;
   }
   function paintBook(){ const b = document.getElementById('bookBox'); if(b) b.innerHTML = bookHTML(); }
   function bookHTML(){
@@ -141,14 +150,15 @@
       <div class="row-between"><div><div class="eyebrow">Your source</div><h3>${M.esc(b.name)}</h3><div class="small muted">${b.pages.length}${b.totalPages > b.pages.length ? ' of ' + b.totalPages : ''} pages · chapters ${methodText}</div></div><button class="btn ghost sm" data-action="book-close">Close</button></div>
       ${b.scanned ? `<div class="notice warn small">${M.icon.info}<div>This looks like a <b>scanned PDF</b> (images, almost no text). ${AI.ready() && AI.canSeeImages() ? 'Pick a chapter and the AI will read the page images (up to 20 pages at a time).' : 'Reading scanned pages needs the AI with image support, which isn’t available here. Use a text-based PDF or paste the text.'}</div></div>` : ''}
       ${(st.method === 'chunks' || st.method === 'whole') && AI.ready() && !b.scanned ? `<button class="btn sm" data-action="book-ai" style="align-self:flex-start">Detect chapters with AI</button>` : ''}
-      <div class="mini-list">${st.list.map((c, i) => `<div class="mini-item" style="cursor:default"><div class="grow"><div class="t">${M.esc(c.title)}</div><div class="s">Pages ${c.start}–${c.end}${c.sections && c.sections.length ? ' · ' + c.sections.slice(0, 4).map(M.esc).join(' · ') : ''}</div></div><button class="btn sm primary" data-action="book-study" data-i="${i}">Study</button></div>`).join('')}</div>
-      <p class="hint">The lesson will teach from this source. Anything added beyond it is labelled “Extra explanation”, and source quotes are checked word-for-word.</p>
+      <div class="mini-list">${st.list.map((c, i) => `<div class="mini-item" style="cursor:default"><div class="grow"><div class="t">${M.esc(c.title)}</div><div class="s">Pages ${c.start}–${c.end}${c.sections && c.sections.length ? ' · ' + c.sections.slice(0, 4).map(M.esc).join(' · ') : ''}</div></div><button class="btn sm primary" data-action="book-study" data-i="${i}">Teach full chapter</button></div>`).join('')}</div>
+      ${st.list.length > 1 && b.pages.length <= 80 ? `<button class="btn sm" data-action="book-study" data-i="all" style="align-self:flex-start">${M.icon.book} Teach the whole PDF as one chapter</button>` : ''}
+      <p class="hint">Your teacher goes through the WHOLE chapter in the book’s own order, line by line — every sentence explained, with diagrams only where they truly help. Anything added beyond the book is labelled “Extra explanation”.</p>
     </div>`;
   }
   M.action('book-close', () => { V.book = null; paintBook(); });
   M.action('book-ai', async () => { const b = V.book; V.bookBusy = 'Detecting book → chapter structure…'; paintBook(); try { b.structure = await Source.chaptersAI(b); } catch(e){ M.toast(e.message); } V.bookBusy = null; paintBook(); });
   M.action('book-study', async el => {
-    const b = V.book; const ch = b.structure.list[Number(el.dataset.i)];
+    const b = V.book; const ch = el.dataset.i === 'all' ? { title: b.name.replace(/\.[^.]+$/, ''), start: 1, end: b.pages.length } : b.structure.list[Number(el.dataset.i)];
     if(!AI.ready()){ M.toast('Teaching from your own PDF needs the AI teacher. ' + AI.friendly('offline')); return; }
     let text = Source.text(b, ch);
     if(b.scanned || text.length < 200){
@@ -355,7 +365,7 @@
     V.libBusy = 'Reading your PDF…'; V.libErr = null; paintLibStatus();
     try {
       const book = await Source.read(file, m => { V.libBusy = m; paintLibStatus(); });
-      book.structure = Source.chapters(book);
+      book.structure = await smartChapters(book, m => { V.libBusy = m; paintLibStatus(); });
       book.id = M.uid('lib'); book.subject = subject; book.addedAt = Date.now();
       Object.defineProperty(book, 'doc', { value: book.doc, enumerable: false }); // kept in memory this session only (for OCR of scanned pages); never saved to storage
       Store.saveLibraryBook(book);

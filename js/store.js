@@ -73,7 +73,9 @@
       } catch(_){}
       try { localStorage.removeItem(LEGACY_KEY); localStorage.removeItem('maa.coach'); localStorage.removeItem('maa.exam'); } catch(_){}
     },
-    saveLocal: M.debounce(function(){
+    saveLocal(){ clearTimeout(Store._saveT); Store._saveT = setTimeout(() => Store.saveLocalNow(), 400); },
+    saveLocalNow(){
+      clearTimeout(Store._saveT);
       const s = Store.state; if(!Store._lsKey) return;
       s.pendingDel = [...Store._dirty].filter(k => Store.docFor(k) === null);
       try { localStorage.setItem(Store._lsKey, JSON.stringify(s)); }
@@ -86,8 +88,8 @@
           localStorage.setItem(Store._lsKey, JSON.stringify(lite));
         } catch(_){}
       }
-    }, 400),
-    forgetDevice(){ try { if(this._lsKey) localStorage.removeItem(this._lsKey); } catch(_){} this._dirty.clear(); this.state = blank(); this.uid = null; this._lsKey = null; },
+    },
+    forgetDevice(){ clearTimeout(this._saveT); try { if(this._lsKey) localStorage.removeItem(this._lsKey); } catch(_){} this._dirty.clear(); this.state = blank(); this.uid = null; this._lsKey = null; },
 
     touch(key){
       this.state.meta[key] = Math.max(Date.now(), (this.state.meta[key] || 0) + 1);
@@ -178,9 +180,9 @@
     _startTimers(){
       if(this._timers) return; this._timers = true;
       const refresh = () => { if(document.visibilityState === 'visible') this.pull(false).then(() => this._flush()); };
-      document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') refresh(); else this.flushNow(4000, true); });
+      document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'visible') refresh(); else { this.saveLocalNow(); this.flushNow(4000, true); } });
       window.addEventListener('online', () => { this.pull(false).then(() => this._flush()); });
-      window.addEventListener('pagehide', () => this.flushNow(3000, true));
+      window.addEventListener('pagehide', () => { this.saveLocalNow(); this.flushNow(3000, true); });
       setInterval(refresh, 90 * 1000);   // pick up work done on another device
     },
     _scheduleRetry(){
@@ -294,3 +296,7 @@
     saveTopic(t){ fixTopic(t, t.id); t.lastActive = Date.now(); this.state.topics[t.id] = t; this.touch('t_' + t.id); },
   };
 })();
+/* Never lose the last second of work: write the local copy the moment the page is hidden or closed
+   (works even when offline, before any account sync has started). */
+window.addEventListener('pagehide', () => Store.saveLocalNow());
+document.addEventListener('visibilitychange', () => { if(document.visibilityState === 'hidden') Store.saveLocalNow(); });

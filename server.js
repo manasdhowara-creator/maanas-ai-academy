@@ -114,6 +114,13 @@ const MODEL_LIST_TTL_MS = 60 * 60 * 1000; // re-check available models once an h
    is a Resend account-level limit, not a bug here. */
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const RESEND_FROM = process.env.RESEND_FROM || 'Maanas AI Academy <onboarding@resend.dev>';
+/* Brevo (https://brevo.com) — preferred when set: free 300 emails/day, and it can deliver to ANY
+   learner's inbox after a one-time sender-email verification (no domain needed). Plain HTTPS API,
+   which also works on Render's free plan (outbound SMTP ports are blocked there). */
+const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
+const BREVO_SENDER = process.env.BREVO_SENDER || '';            // the verified sender address
+const EMAIL_PROVIDER = BREVO_API_KEY && BREVO_SENDER ? 'brevo' : RESEND_API_KEY ? 'resend' : 'none';
+console.log('Email provider:', EMAIL_PROVIDER);
 
 // Last-resort hardcoded list, used only if the live model list can't be fetched at all
 // (e.g. a transient network issue) — kept a few models deep just in case.
@@ -156,7 +163,7 @@ async function getModels() {
 app.get('/api/health', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const acc = await accounts.health();
-  res.json({ ok: !!(GEMINI_API_KEY || GROQ_API_KEY), email: !!RESEND_API_KEY, accounts: acc.ok ? acc.kind : 'down' });
+  res.json({ ok: !!(GEMINI_API_KEY || GROQ_API_KEY), email: EMAIL_PROVIDER !== 'none', accounts: acc.ok ? acc.kind : 'down' });
 });
 
 // Lightweight liveness check (no AI involved) — point Render's health check / an uptime monitor here.
@@ -169,36 +176,41 @@ app.get('/healthz', (req, res) => { res.setHeader('Cache-Control', 'no-store'); 
    actually confirms the send — never a fake "sent" response. */
 app.post('/api/email', accounts.requireUser, emailLimiter, async (req, res) => {
   try {
-    if (!RESEND_API_KEY) return res.status(503).json({ error: 'email_not_configured' });
-    const { to, subject, html, text } = req.body || {};
+    if (EMAIL_PROVIDER === 'none') return res.status(503).json({ error: 'email_not_configured' });
+    const { subject, html, text } = req.body || {};
+    // Recipient safety: an account that logged in with an email can only ever mail ITSELF.
+    // (Username accounts use the email saved in their own profile.)
+    const accountEmail = req.user.login.includes('@') ? req.user.login : '';
+    const to = accountEmail || String((req.body || {}).to || '').trim().toLowerCase();
     if (typeof to !== 'string' || to.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return res.status(400).json({ error: 'bad_recipient' });
     if (!subject || !(html || text)) return res.status(400).json({ error: 'missing_fields' });
-    if ((html && (typeof html !== 'string' || html.length > 300000)) || (text && (typeof text !== 'string' || text.length > 100000))) {
+    if ((html && (typeof html !== 'string' || html.length > 600000)) || (text && (typeof text !== 'string' || text.length > 200000))) {
       return res.status(413).json({ error: 'prompt_too_large' });
     }
-
-    const upstream = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${RESEND_API_KEY}` },
-      body: JSON.stringify({
-        from: RESEND_FROM,
-        to: [to],
-        subject: String(subject).slice(0, 200),
-        html: html || undefined,
-        text: text || (html ? undefined : ' '),
-      }),
-    });
-
+    const subj = String(subject).slice(0, 200);
+    let upstream;
+    if (EMAIL_PROVIDER === 'brevo') {
+      upstream = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', accept: 'application/json', 'api-key': BREVO_API_KEY },
+        body: JSON.stringify({ sender: { name: 'Maanas AI Academy', email: BREVO_SENDER }, to: [{ email: to, name: req.user.name || undefined }], subject: subj, htmlContent: html || undefined, textContent: text || undefined }),
+      });
+    } else {
+      upstream = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${RESEND_API_KEY}` },
+        body: JSON.stringify({ from: RESEND_FROM, to: [to], subject: subj, html: html || undefined, text: text || (html ? undefined : ' ') }),
+      });
+    }
     if (!upstream.ok) {
       const detail = await upstream.text().catch(() => '');
-      console.error('Resend send failed:', upstream.status, detail.slice(0, 400));
-      // Resend's own error for "domain not verified, can only send to account owner"
+      console.error(`${EMAIL_PROVIDER} send failed:`, upstream.status, detail.slice(0, 400));
       if (upstream.status === 403 && /verify a domain|only send testing emails/i.test(detail)) {
-        return res.status(502).json({ error: 'send_failed', detail: 'Sender domain not verified on Resend yet — it can currently only email the Resend account owner\'s own address.' });
+        return res.status(502).json({ error: 'send_failed', detail: 'Email service can only send to the admin’s own address until it is fully set up.' });
       }
       return res.status(502).json({ error: 'send_failed' });
     }
-    return res.json({ ok: true });
+    return res.json({ ok: true, to });
   } catch (e) {
     console.error('Email send failed:', e.message);
     return res.status(502).json({ error: 'send_failed' });
@@ -218,7 +230,7 @@ async function callGroq(contents, wantJson) {
   const body = {
     model: GROQ_MODEL,
     messages,
-    max_tokens: 8192,
+    max_tokens: 8000,
   };
   if (wantJson) body.response_format = { type: 'json_object' };
 
@@ -298,7 +310,7 @@ app.post('/api/ai', accounts.requireUser, aiLimiter, async (req, res) => {
   try {
     if (!GEMINI_API_KEY && !GROQ_API_KEY) return res.status(503).json({ error: 'no_api_key' });
 
-    const { input, json, images } = req.body || {};
+    const { input, json, images, maxTokens } = req.body || {};
     if (!input) return res.status(400).json({ error: 'missing_input' });
 
     const promptChars = typeof input === 'string' ? input.length
@@ -331,7 +343,8 @@ app.post('/api/ai', accounts.requireUser, aiLimiter, async (req, res) => {
       last.parts[0].text += '\n\nRespond with ONLY valid JSON. No markdown code fences, no extra commentary.';
     }
 
-    const body = { contents, generationConfig: { maxOutputTokens: 8192 } };
+    const outTokens = Math.min(32768, Math.max(1024, parseInt(maxTokens, 10) || 16384));
+    const body = { contents, generationConfig: { maxOutputTokens: outTokens } };
     if (json) body.generationConfig.responseMimeType = 'application/json';
 
     const MODELS = GEMINI_API_KEY ? orderModels(await getModels()) : [];
