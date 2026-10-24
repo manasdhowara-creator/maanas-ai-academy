@@ -68,7 +68,7 @@ const emailLimiter = rateLimit({
 app.use('/api/ai', express.json({ limit: '16mb' }));
 
 /* ---------- Learner accounts + private per-learner cloud data (see accounts.js) ---------- */
-const accounts = createAccounts();
+const accounts = createAccounts({ mail: { configured: () => EMAIL_PROVIDER !== 'none', send: m => sendMail(m) } });
 app.use('/api', accounts.router);
 app.use(express.json({ limit: '1mb' }));
 
@@ -121,6 +121,30 @@ const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
 const BREVO_SENDER = process.env.BREVO_SENDER || '';            // the verified sender address
 const EMAIL_PROVIDER = BREVO_API_KEY && BREVO_SENDER ? 'brevo' : RESEND_API_KEY ? 'resend' : 'none';
 console.log('Email provider:', EMAIL_PROVIDER);
+
+/* One place that talks to the email provider (used by Email Notes AND password-reset links).
+   Resolves {ok:true} only when the provider confirmed acceptance; never throws for provider errors. */
+async function sendMail({ to, name, subject, html, text }) {
+  let upstream;
+  if (EMAIL_PROVIDER === 'brevo') {
+    upstream = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', accept: 'application/json', 'api-key': BREVO_API_KEY },
+      body: JSON.stringify({ sender: { name: 'Maanas AI Academy', email: BREVO_SENDER }, to: [{ email: to, name: name || undefined }], subject, htmlContent: html || undefined, textContent: text || undefined }),
+    });
+  } else if (EMAIL_PROVIDER === 'resend') {
+    upstream = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${RESEND_API_KEY}` },
+      body: JSON.stringify({ from: RESEND_FROM, to: [to], subject, html: html || undefined, text: text || (html ? undefined : ' ') }),
+    });
+  } else {
+    return { ok: false, status: 0, detail: 'email_not_configured' };
+  }
+  if (upstream.ok) return { ok: true };
+  const detail = await upstream.text().catch(() => '');
+  return { ok: false, status: upstream.status, detail };
+}
 
 // Last-resort hardcoded list, used only if the live model list can't be fetched at all
 // (e.g. a transient network issue) — kept a few models deep just in case.
@@ -188,24 +212,11 @@ app.post('/api/email', accounts.requireUser, emailLimiter, async (req, res) => {
       return res.status(413).json({ error: 'prompt_too_large' });
     }
     const subj = String(subject).slice(0, 200);
-    let upstream;
-    if (EMAIL_PROVIDER === 'brevo') {
-      upstream = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', accept: 'application/json', 'api-key': BREVO_API_KEY },
-        body: JSON.stringify({ sender: { name: 'Maanas AI Academy', email: BREVO_SENDER }, to: [{ email: to, name: req.user.name || undefined }], subject: subj, htmlContent: html || undefined, textContent: text || undefined }),
-      });
-    } else {
-      upstream = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${RESEND_API_KEY}` },
-        body: JSON.stringify({ from: RESEND_FROM, to: [to], subject: subj, html: html || undefined, text: text || (html ? undefined : ' ') }),
-      });
-    }
-    if (!upstream.ok) {
-      const detail = await upstream.text().catch(() => '');
-      console.error(`${EMAIL_PROVIDER} send failed:`, upstream.status, detail.slice(0, 400));
-      if (upstream.status === 403 && /verify a domain|only send testing emails/i.test(detail)) {
+    const sent = await sendMail({ to, name: req.user.name, subject: subj, html, text });
+    if (!sent.ok) {
+      const detail = sent.detail || '';
+      console.error(`${EMAIL_PROVIDER} send failed:`, sent.status, String(detail).slice(0, 400));
+      if (sent.status === 403 && /verify a domain|only send testing emails/i.test(detail)) {
         return res.status(502).json({ error: 'send_failed', detail: 'Email service can only send to the admin’s own address until it is fully set up.' });
       }
       return res.status(502).json({ error: 'send_failed' });

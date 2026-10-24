@@ -480,3 +480,7 @@ details.fold > div{padding-bottom:14px}
 .email-card{gap:12px;flex-wrap:wrap}
 @media (max-width:600px){.ln-exp{padding-left:4px}.iq-a{padding-left:14px}.terms dl>div{grid-template-columns:1fr;gap:2px}}
 .email-card b{display:flex;align-items:center;gap:8px}.email-card svg{width:18px;height:18px;flex:none}
+
+/* ---- forgot / reset password ---- */
+.auth-forgot{align-self:flex-end;margin-top:-6px;font-weight:700}
+.auth-ok{background:var(--ok-soft);color:var(--ok);border-radius:10px;padding:10px 12px;font-size:.92rem;font-weight:600;line-height:1.45}

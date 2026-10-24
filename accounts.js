@@ -83,7 +83,24 @@ function pgStore(url){
         PRIMARY KEY(user_id, key))`);
       await q(`CREATE INDEX IF NOT EXISTS maa_docs_srv ON maa_docs(user_id, srv)`);
       await q(`DELETE FROM maa_sessions WHERE expires < $1`, [Date.now()]);
+      // Password-reset links. Kept in its own try/catch so that, whatever happens here, logging in never breaks.
+      try {
+        await q(`CREATE TABLE IF NOT EXISTS maa_resets(
+          token_hash text PRIMARY KEY, user_id text NOT NULL REFERENCES maa_users(id) ON DELETE CASCADE,
+          created bigint NOT NULL, expires bigint NOT NULL)`);
+        await q(`CREATE INDEX IF NOT EXISTS maa_resets_user ON maa_resets(user_id)`);
+        await q(`DELETE FROM maa_resets WHERE expires < $1`, [Date.now()]);
+      } catch(e){ console.error('Password-reset table could not be prepared (logins are unaffected):', e.message); }
     },
+    /* one live reset link per learner: asking again replaces the old link */
+    async addReset(r){
+      await q(`DELETE FROM maa_resets WHERE user_id=$1 OR expires < $2`, [r.user_id, Date.now()]);
+      await q(`INSERT INTO maa_resets(token_hash, user_id, created, expires) VALUES($1,$2,$3,$4)`, [r.token_hash, r.user_id, r.created, r.expires]);
+    },
+    async peekReset(hash){ return (await q(`SELECT user_id FROM maa_resets WHERE token_hash=$1 AND expires>$2`, [hash, Date.now()])).rows[0] || null; },
+    /* atomic "use once": the DELETE succeeds for exactly one caller, so a link can never be used twice */
+    async takeReset(hash){ const r = await q(`DELETE FROM maa_resets WHERE token_hash=$1 AND expires>$2 RETURNING user_id`, [hash, Date.now()]); return r.rows[0] ? r.rows[0].user_id : null; },
+    async dropResets(userId){ await q(`DELETE FROM maa_resets WHERE user_id=$1`, [userId]); },
     async createUser(u){
       try { await q(`INSERT INTO maa_users(id, login, name, pass, created) VALUES($1,$2,$3,$4,$5)`, [u.id, u.login, u.name, u.pass, u.created]); return true; }
       catch(e){ if(e.code === '23505') return false; throw e; }
@@ -122,19 +139,24 @@ function pgStore(url){
 }
 
 function fileStore(file){
-  let db = { users: {}, sessions: {}, docs: {} };
+  let db = { users: {}, sessions: {}, docs: {}, resets: {} };
   try { db = JSON.parse(fs.readFileSync(file, 'utf8')); } catch(_){}
+  db.resets = db.resets || {};
   let t = null;
   const save = () => { clearTimeout(t); t = setTimeout(() => { try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file + '.tmp', JSON.stringify(db)); fs.renameSync(file + '.tmp', file); } catch(e){ console.error('file store save failed', e.message); } }, 200); };
   const userDocs = id => (db.docs[id] = db.docs[id] || {});
   return {
     kind: 'temporary-file',
     async init(){},
+    async addReset(r){ const now = Date.now(); Object.keys(db.resets).forEach(h => { if(db.resets[h].user_id === r.user_id || db.resets[h].expires < now) delete db.resets[h]; }); db.resets[r.token_hash] = { ...r }; save(); },
+    async peekReset(h){ const r = db.resets[h]; return r && r.expires > Date.now() ? { user_id: r.user_id } : null; },
+    async takeReset(h){ const r = db.resets[h]; if(!r) return null; delete db.resets[h]; save(); return r.expires > Date.now() ? r.user_id : null; },
+    async dropResets(id){ Object.keys(db.resets).forEach(h => { if(db.resets[h].user_id === id) delete db.resets[h]; }); save(); },
     async createUser(u){ if(Object.values(db.users).some(x => x.login === u.login)) return false; db.users[u.id] = { ...u }; save(); return true; },
     async userByLogin(login){ return Object.values(db.users).find(x => x.login === login) || null; },
     async userById(id){ return db.users[id] || null; },
     async updateUser(id, f){ if(db.users[id]) Object.assign(db.users[id], f); save(); },
-    async deleteUser(id){ delete db.users[id]; delete db.docs[id]; Object.keys(db.sessions).forEach(h => { if(db.sessions[h].user_id === id) delete db.sessions[h]; }); save(); },
+    async deleteUser(id){ delete db.users[id]; delete db.docs[id]; Object.keys(db.resets).forEach(h => { if(db.resets[h].user_id === id) delete db.resets[h]; }); Object.keys(db.sessions).forEach(h => { if(db.sessions[h].user_id === id) delete db.sessions[h]; }); save(); },
     async addSession(s){ db.sessions[s.token_hash] = s; save(); },
     async session(h){ return db.sessions[h] || null; },
     async touchSession(h, expires){ if(db.sessions[h]) db.sessions[h].expires = expires; save(); },
@@ -167,7 +189,29 @@ function limiter(windowMs, max, keyFn){
 }
 
 /* ---------------- the module ---------------- */
-function createAccounts(){
+/* opts.mail = { configured(): boolean, send({to, name, subject, html, text}): Promise<{ok}> } — used for password-reset emails */
+function createAccounts(opts = {}){
+  const mail = opts.mail || null;
+  const RESET_MINUTES = Number(process.env.RESET_LINK_MINUTES) || 30;
+  // Reset links always point at OUR site, never at whatever "Host" header a caller sends (that would let
+  // an attacker get a victim's reset token mailed to a look-alike domain).
+  const publicBase = () => String(process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || 'https://maanas-ai-academy-app.onrender.com').replace(/\/+$/, '');
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const resetEmail = (name, link) => ({
+    subject: 'Reset your Maanas AI Academy password',
+    text: `Hi ${name || 'there'},\n\nSomeone (hopefully you) asked to reset your Maanas AI Academy password.\n\nOpen this link to choose a new password (valid for ${RESET_MINUTES} minutes, works once):\n${link}\n\nIf you did not ask for this, ignore this email — your password stays unchanged and your study data is safe.\n\n— Maanas AI Academy`,
+    html: `<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;color:#111A24">
+      <div style="background:#2E3FD6;color:#fff;padding:18px 22px;border-radius:12px 12px 0 0;font-size:18px;font-weight:700">Maanas AI Academy</div>
+      <div style="border:1px solid #DCE2E8;border-top:0;border-radius:0 0 12px 12px;padding:22px">
+        <p style="margin:0 0 12px">Hi ${esc(name || 'there')},</p>
+        <p style="margin:0 0 16px;line-height:1.5">Someone (hopefully you) asked to reset your password. Tap the button to choose a new one. The link works <b>once</b> and expires in <b>${RESET_MINUTES} minutes</b>.</p>
+        <p style="margin:0 0 18px"><a href="${esc(link)}" style="background:#2E3FD6;color:#fff;text-decoration:none;padding:13px 22px;border-radius:10px;font-weight:700;display:inline-block">Choose a new password</a></p>
+        <p style="margin:0 0 6px;font-size:13px;color:#5B6875">Button not working? Copy this link into your browser:</p>
+        <p style="margin:0 0 16px;font-size:13px;word-break:break-all"><a href="${esc(link)}" style="color:#2E3FD6">${esc(link)}</a></p>
+        <p style="margin:0;font-size:13px;color:#5B6875;line-height:1.5">If you didn’t ask for this, ignore this email. Your password stays unchanged and your study data is safe.</p>
+      </div></div>`,
+  });
+
   const url = process.env.DATABASE_URL || '';
   const store = url ? pgStore(url) : fileStore(path.join(__dirname, 'data', 'accounts.json'));
   let ready = null, readyErr = null;
@@ -183,6 +227,9 @@ function createAccounts(){
   const signupLimit = limiter(60 * 60 * 1000, 20, req => req.ip);
   const loginIpLimit = limiter(15 * 60 * 1000, 60, req => req.ip);
   const failLimit = limiter(15 * 60 * 1000, 10, () => '');
+  const forgotIpLimit = limiter(60 * 60 * 1000, 10, req => req.ip);          // reset requests per network per hour
+  const forgotLoginLimit = limiter(60 * 60 * 1000, 3, () => '');            // reset emails per account per hour (stops inbox flooding)
+  const resetIpLimit = limiter(15 * 60 * 1000, 30, req => req.ip);          // guessing / submitting reset links
 
   const cookieOpts = (req, maxAgeSec) => [`Path=/`, `HttpOnly`, `SameSite=Lax`, `Max-Age=${maxAgeSec}`, req.secure ? 'Secure' : ''].filter(Boolean).join('; ');
   const setCookie = (req, res, token) => res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(token)}; ${cookieOpts(req, SESSION_DAYS * 86400)}`);
@@ -265,6 +312,57 @@ function createAccounts(){
     failLimit.clear('f:' + L);
     await store.updateUser(u.id, { last_login: Date.now() });
     await startSession(req, res, u);
+    res.json({ user: publicUser(u) });
+  }));
+
+  /* ----- forgot password: emailed one-time link ----- */
+  // Always answers {ok:true} for a well-formed email, whether or not an account exists, so this form
+  // can't be used to find out who has an account. Only accounts that signed up WITH an email get a mail.
+  router.post('/auth/forgot', forgotIpLimit.mw(), wrap(async (req, res) => {
+    if(!mail || !mail.configured()) return res.status(503).json({ error: 'email_not_configured' });
+    const L = normLogin((req.body || {}).login);
+    if(!L || !L.includes('@') || L.length > 254 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(L)) return res.status(400).json({ error: 'need_email' });
+    await whenReady();
+    const u = await store.userByLogin(L);
+    let link = null;
+    if(u && forgotLoginLimit.hit('r:' + L).n <= 3){
+      const token = newToken(), now = Date.now();
+      await store.addReset({ token_hash: sha256(token), user_id: u.id, created: now, expires: now + RESET_MINUTES * 60000 });
+      link = `${publicBase()}/#reset=${token}`;       // in the #fragment: browsers never send it to servers, logs or other sites
+    }
+    res.json({ ok: true });
+    if(link){
+      // after replying, so the response time doesn't reveal whether the account exists
+      const m = resetEmail(u.name, link);
+      Promise.resolve(mail.send({ to: u.login, name: u.name, subject: m.subject, html: m.html, text: m.text }))
+        .then(r => { if(!r || !r.ok) console.error('Password-reset email could not be sent:', r && r.status, r && String(r.detail || '').slice(0, 200)); })
+        .catch(e => console.error('Password-reset email failed:', e.message));
+    }
+  }));
+
+  router.post('/auth/reset-check', resetIpLimit.mw(), wrap(async (req, res) => {
+    await whenReady();
+    const t = (req.body || {}).token;
+    if(typeof t !== 'string' || t.length < 20 || t.length > 200) return res.status(400).json({ error: 'bad_reset' });
+    const r = await store.peekReset(sha256(t));
+    if(!r) return res.status(400).json({ error: 'bad_reset' });
+    res.json({ ok: true });
+  }));
+
+  router.post('/auth/reset', resetIpLimit.mw(), wrap(async (req, res) => {
+    await whenReady();
+    const { token, password } = req.body || {};
+    if(typeof token !== 'string' || token.length < 20 || token.length > 200) return res.status(400).json({ error: 'bad_reset' });
+    // check the password BEFORE using up the link, so a too-short password doesn't burn it
+    if(typeof password !== 'string' || password.length < 6 || password.length > 200) return res.status(400).json({ error: 'weak_password' });
+    const uid = await store.takeReset(sha256(token));
+    const u = uid ? await store.userById(uid) : null;
+    if(!u) return res.status(400).json({ error: 'bad_reset' });
+    await store.updateUser(u.id, { pass: await hashPassword(password), last_login: Date.now() });
+    await store.dropUserSessions(u.id, '');          // anyone logged in with the old password is signed out
+    await store.dropResets(u.id);
+    failLimit.clear('f:' + u.login);                 // lift any "too many wrong tries" lock
+    await startSession(req, res, u);                 // and log this device straight in
     res.json({ user: publicUser(u) });
   }));
 

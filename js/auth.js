@@ -38,12 +38,35 @@
     storage_unavailable: 'The server’s storage is waking up. Try again in a few seconds.',
     offline: 'No internet connection (or the server is waking up). Check your connection and try again.',
     wrong_password: 'Current password is wrong.',
+    need_email: 'Password-reset links are sent by email. Enter the email address you signed up with. (Signed up with a username? Ask the academy admin, Maanas, to reset it.)',
+    email_not_configured: 'Password-reset emails are not switched on yet. Please ask the academy admin (Maanas) to reset your password.',
+    bad_reset: 'This reset link is invalid, already used, or expired (links last 30 minutes). Please request a new one.',
   };
+
+  /* ---------- reset-link token ----------
+     The emailed link looks like  …/#reset=TOKEN . The #part is never sent to any server. We remove it from the
+     address bar at once (so it can't leak via history, screenshots or sharing) and keep it for this tab only. */
+  const RESET_KEY = 'maa.reset';
+  function takeResetToken(){
+    let tok = null;
+    const m = /^#reset=([A-Za-z0-9_-]{20,200})$/.exec(location.hash || '');
+    if(m){
+      tok = m[1];
+      try { sessionStorage.setItem(RESET_KEY, tok); } catch(_){}
+      try { history.replaceState(null, '', location.pathname + location.search); } catch(_){}
+    } else {
+      try { tok = sessionStorage.getItem(RESET_KEY); } catch(_){}   // survives an automatic page reload
+    }
+    return tok;
+  }
+  const clearResetToken = () => { try { sessionStorage.removeItem(RESET_KEY); } catch(_){} };
   Auth.msg = code => MSG[code] || 'Something went wrong. Please try again.';
 
   /* ---------- boot ---------- */
   Auth.boot = (onReady) => {
     Auth._onReady = onReady;
+    const resetTok = takeResetToken();
+    if(resetTok){ showScreen('reset', resetTok); return; }          // opened from a "reset password" email
     const cached = readCache();
     if(cached && cached.id){ enter(cached, false); verify(); }
     else { showScreen('login'); silentResume(); }
@@ -87,17 +110,13 @@
   };
 
   /* ---------- the screen ---------- */
-  function showScreen(mode){
+  function showScreen(mode, token){
     document.getElementById('app').hidden = true;
     const el = document.getElementById('auth'); el.hidden = false;
-    paint(mode);
+    if(mode === 'reset') paintReset(token); else paint(mode);
   }
 
-  function paint(mode, err = '', vals = {}){
-    const el = document.getElementById('auth');
-    const signup = mode === 'signup';
-    el.innerHTML = `
-      <div class="auth-wrap">
+  const heroHTML = () => `
         <div class="auth-hero">
           <div class="brand"><span class="brand-mark" aria-hidden="true">M</span><span class="brand-text"><b>Maanas</b> AI Academy</span></div>
           <h1 class="auth-title">Learn it. Prove it.<br><span>Master it.</span></h1>
@@ -107,7 +126,14 @@
             <li>${M.icon.repeat}<span>Saved automatically to the cloud, every few seconds</span></li>
             <li>${M.icon.link}<span>Log in from any device and continue where you stopped</span></li>
           </ul>
-        </div>
+        </div>`;
+
+  function paint(mode, err = '', vals = {}){
+    const el = document.getElementById('auth');
+    const signup = mode === 'signup';
+    el.innerHTML = `
+      <div class="auth-wrap">
+        ${heroHTML()}
         <form class="auth-card" id="authForm" novalidate>
           <div class="auth-tabs" role="tablist">
             <button type="button" role="tab" class="auth-tab ${!signup ? 'on' : ''}" aria-selected="${!signup}" data-action="auth-mode" data-m="login">Log in</button>
@@ -119,18 +145,104 @@
           <div class="field"><label for="aPass">Password</label>
             <div class="pass-row"><input class="input" id="aPass" type="password" autocomplete="${signup ? 'new-password' : 'current-password'}" minlength="6" maxlength="200" required placeholder="${signup ? 'At least 6 characters' : 'Your password'}"><button type="button" class="btn sm ghost" data-action="auth-peek" aria-label="Show password">Show</button></div>
           </div>
+          ${!signup ? '<a href="#" class="small auth-forgot" data-action="auth-forgot">Forgot password?</a>' : ''}
           ${signup ? `<div class="field"><label for="aPass2">Confirm password</label><input class="input" id="aPass2" type="password" autocomplete="new-password" maxlength="200" required placeholder="Type it again"></div>` : ''}
           <div class="auth-err" id="authErr" role="alert" ${err ? '' : 'hidden'}>${M.esc(err)}</div>
           <button class="btn primary auth-submit" type="submit" id="authBtn">${signup ? 'Create account' : 'Log in'}</button>
           <p class="small muted auth-foot">${signup ? 'Already have an account? <a href="#" data-action="auth-mode" data-m="login">Log in</a>' : 'New here? <a href="#" data-action="auth-mode" data-m="signup">Create a free account</a>'}</p>
-          ${!signup ? '<p class="small muted auth-foot">Forgot your password? Ask the academy admin (Maanas) to reset it — your data stays safe.</p>' : ''}
+          ${!signup ? '<p class="small muted auth-foot">Signed up with a username instead of an email? Ask the academy admin (Maanas) to reset your password — your data stays safe.</p>' : ''}
         </form>
       </div>`;
     el.querySelector('#authForm').addEventListener('submit', e => { e.preventDefault(); submit(signup ? 'signup' : 'login'); });
     setTimeout(() => { const f = el.querySelector(signup && !vals.name ? '#aName' : vals.login ? '#aPass' : '#aLogin'); if(f && matchMedia('(min-width: 700px)').matches) f.focus(); }, 30);
   }
 
-  M.action('auth-mode', el => paint(el.dataset.m, '', { name: (document.getElementById('aName') || {}).value, login: (document.getElementById('aLogin') || {}).value }));
+  M.action('auth-mode', el => { clearResetToken(); paint(el.dataset.m, '', { name: (document.getElementById('aName') || {}).value, login: (document.getElementById('aLogin') || {}).value || (document.getElementById('fEmail') || {}).value }); });
+
+  /* ---------- forgot password / choose a new password ---------- */
+  function frame(inner){
+    const el = document.getElementById('auth');
+    el.innerHTML = `<div class="auth-wrap">${heroHTML()}<form class="auth-card" id="authForm" novalidate>${inner}</form></div>`;
+    return el;
+  }
+  const focusLater = (sel) => setTimeout(() => { const f = document.querySelector(sel); if(f && matchMedia('(min-width: 700px)').matches) f.focus(); }, 30);
+
+  function paintForgot(err = '', vals = {}, sentTo = ''){
+    const el = frame(sentTo ? `
+      <h2>Check your email</h2>
+      <div class="auth-ok" role="status">If an account exists for <b>${M.esc(sentTo)}</b>, we’ve sent a link to reset its password. The link works once and expires in 30 minutes.</div>
+      <p class="small muted">Nothing in your inbox? Look in Spam or Promotions and wait a minute. Only accounts created with an email address can get a link.</p>
+      <button class="btn primary auth-submit" type="button" data-action="auth-mode" data-m="login">Back to log in</button>
+      <p class="small muted auth-foot"><a href="#" data-action="auth-forgot">Use a different email</a></p>` : `
+      <h2>Forgot your password?</h2>
+      <p class="small muted">Enter the email you signed up with. We’ll email you a link to choose a new password. Your lessons and notes stay safe.</p>
+      <div class="field"><label for="fEmail">Email</label><input class="input" id="fEmail" type="email" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="email" maxlength="254" required value="${M.esc(vals.login || '')}" placeholder="you@gmail.com"></div>
+      <div class="auth-err" id="authErr" role="alert" ${err ? '' : 'hidden'}>${M.esc(err)}</div>
+      <button class="btn primary auth-submit" type="submit" id="authBtn">Send reset link</button>
+      <p class="small muted auth-foot"><a href="#" data-action="auth-mode" data-m="login">← Back to log in</a></p>`);
+    if(!sentTo){ el.querySelector('#authForm').addEventListener('submit', e => { e.preventDefault(); submitForgot(); }); focusLater('#fEmail'); }
+  }
+  M.action('auth-forgot', () => { const l = ((document.getElementById('aLogin') || {}).value || '').trim(); paintForgot('', { login: l.includes('@') ? l : '' }); });
+
+  async function submitForgot(){
+    if(busy) return;
+    const email = ((document.getElementById('fEmail') || {}).value || '').trim().toLowerCase();
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return paintForgot(email ? MSG.need_email : 'Please enter your email address.', { login: email });
+    busy = true;
+    const btn = document.getElementById('authBtn'); btn.disabled = true; btn.textContent = 'Sending…';
+    const slow = setTimeout(() => { if(btn.isConnected) btn.textContent = 'Waking up the server… (can take up to a minute)'; }, 4000);
+    try { await Auth.api('/auth/forgot', { method: 'POST', body: { login: email }, timeout: 90000 }); clearTimeout(slow); paintForgot('', {}, email); }
+    catch(e){ clearTimeout(slow); paintForgot(Auth.msg(e.code), { login: email }); }
+    finally { busy = false; }
+  }
+
+  function paintResetExpired(){
+    clearResetToken();
+    frame(`
+      <h2>This link can’t be used</h2>
+      <div class="auth-err" role="alert">${M.esc(MSG.bad_reset)}</div>
+      <button class="btn primary auth-submit" type="button" data-action="auth-forgot">Get a new reset link</button>
+      <p class="small muted auth-foot"><a href="#" data-action="auth-mode" data-m="login">← Back to log in</a></p>`);
+  }
+
+  function paintReset(token, err = '', skipCheck = false){
+    const form = () => {
+      const el = frame(`
+        <h2>Choose a new password</h2>
+        <p class="small muted">Pick a new password for your account. You’ll be logged in right after.</p>
+        <div class="field"><label for="rPass">New password</label>
+          <div class="pass-row"><input class="input" id="rPass" type="password" autocomplete="new-password" minlength="6" maxlength="200" required placeholder="At least 6 characters"><button type="button" class="btn sm ghost" data-action="reset-peek" aria-label="Show password">Show</button></div></div>
+        <div class="field"><label for="rPass2">Confirm new password</label><input class="input" id="rPass2" type="password" autocomplete="new-password" maxlength="200" required placeholder="Type it again"></div>
+        <div class="auth-err" id="authErr" role="alert" ${err ? '' : 'hidden'}>${M.esc(err)}</div>
+        <button class="btn primary auth-submit" type="submit" id="authBtn">Save new password</button>
+        <p class="small muted auth-foot"><a href="#" data-action="auth-mode" data-m="login">← Back to log in</a></p>`);
+      el.querySelector('#authForm').addEventListener('submit', e => { e.preventDefault(); submitReset(token); });
+      focusLater('#rPass');
+    };
+    if(skipCheck) return form();
+    frame('<h2>Choose a new password</h2><p class="small muted" role="status">Checking your reset link… (the first load can take up to a minute)</p>');
+    // Confirm the link is still valid BEFORE the learner types a new password. If we can't reach the server, still show the form.
+    Auth.api('/auth/reset-check', { method: 'POST', body: { token }, timeout: 90000 })
+      .then(form, e => { if(e.code === 'bad_reset') paintResetExpired(); else form(); });
+  }
+  M.action('reset-peek', el => { const p = document.getElementById('rPass'), p2 = document.getElementById('rPass2'); const show = p.type === 'password'; [p, p2].forEach(x => { if(x) x.type = show ? 'text' : 'password'; }); el.textContent = show ? 'Hide' : 'Show'; el.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); });
+
+  async function submitReset(token){
+    if(busy) return;
+    const pass = (document.getElementById('rPass') || {}).value || '', pass2 = (document.getElementById('rPass2') || {}).value || '';
+    if(pass.length < 6) return paintReset(token, MSG.weak_password, true);
+    if(pass !== pass2) return paintReset(token, 'The two passwords don’t match.', true);
+    busy = true;
+    const btn = document.getElementById('authBtn'); btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+      const r = await Auth.api('/auth/reset', { method: 'POST', body: { token, password: pass }, timeout: 90000 });
+      clearResetToken();
+      enter(r.user, true);
+      M.toast('Password changed. You’re logged in.', 4000);
+    } catch(e){
+      if(e.code === 'bad_reset') paintResetExpired(); else paintReset(token, Auth.msg(e.code), true);
+    } finally { busy = false; }
+  }
   M.action('auth-peek', el => { const p = document.getElementById('aPass'), p2 = document.getElementById('aPass2'); const show = p.type === 'password'; [p, p2].forEach(x => { if(x) x.type = show ? 'text' : 'password'; }); el.textContent = show ? 'Hide' : 'Show'; el.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); });
 
   let busy = false;
